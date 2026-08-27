@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Login — SyntheticBot Pro{% endblock %}
+{% block body %}
+<div class="auth-page">
+  <div class="auth-card">
+    <div class="auth-logo"><span class="logo-icon">⚡</span><span class="logo-text">SyntheticBot <span class="logo-pro">PRO</span></span></div>
+    <h2 class="auth-title">Welcome back</h2>
+    <p class="auth-sub">Sign in to your trading dashboard</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}<div class="alert alert-{{ cat }}">{{ msg }}</div>{% endfor %}
+    {% endwith %}
+    <form method="POST" class="auth-form">
+      <div class="field"><label>Username</label><input type="text" name="username" placeholder="Enter username" required autofocus></div>
+      <div class="field"><label>Password</label><input type="password" name="password" placeholder="Enter password" required></div>
+      <button type="submit" class="btn-primary full-width">Sign In</button>
+    </form>
+    <p class="auth-switch">Don't have an account? <a href="/register">Create one</a></p>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,507 @@
+
+=======================================================
+  SYNTHETICBOT PRO — COMPLETE SETUP GUIDE (A to Z)
+  For beginners — every single step explained
+=======================================================
+
+HOW THIS BOT WORKS
+------------------
+This bot trades Deriv Volatility Indices automatically using
+the Triple EMA Strategy (EMA 21, 50, 100) across 3 timeframes:
+
+  H4  → Sets the big picture direction (Buy or Sell bias)
+  H1  → Confirms the direction. If H1 is "consolidating"
+         (EMAs tangled, no clear direction) → bot does NOT trade
+  M15 → Where the actual trade entry happens. Bot waits for
+         price to touch the 21 EMA and bounce back in the
+         direction confirmed by H1 and H4.
+
+Exit rule: When the 21 EMA crosses back through the 50 EMA
+on M15, OR when H1 starts consolidating → trade closes.
+
+You control everything from a website that runs on your computer.
+Open your browser, log in, pick your pair, press Start.
+
+
+═══════════════════════════════════════════════════════
+  PART 1 — INSTALL PYTHON  (do this once, ever)
+═══════════════════════════════════════════════════════
+
+STEP 1 — Download Python
+─────────────────────────
+1. Open your browser and go to:
+   https://www.python.org/downloads/release/python-3810/
+
+2. Scroll down to "Files" section at the bottom of the page.
+
+3. Click: "Windows installer (64-bit)"
+   File name: python-3.8.10-amd64.exe
+
+4. Wait for the download to finish.
+
+STEP 2 — Install Python (VERY IMPORTANT — read carefully)
+──────────────────────────────────────────────────────────
+1. Double-click the downloaded file: python-3.8.10-amd64.exe
+
+2. *** BEFORE clicking Install Now ***
+   At the BOTTOM of the installer window you will see:
+   "Add Python 3.8 to PATH"
+   
+   ✅ TICK THAT CHECKBOX — this is critical!
+   If you miss this, nothing will work.
+
+3. Now click "Install Now"
+
+4. Wait for it to finish. Click "Close".
+
+STEP 3 — Verify Python installed correctly
+───────────────────────────────────────────
+1. Press the Windows key on your keyboard
+2. Type: PowerShell
+3. Click "Windows PowerShell" to open it
+4. Type this and press Enter:
+
+   python --version
+
+5. You should see: Python 3.8.10
+   If you see that → Python is installed correctly. ✅
+   If you see an error → go back and redo Step 2.
+
+
+═══════════════════════════════════════════════════════
+  PART 2 — SET UP THE BOT FILES
+═══════════════════════════════════════════════════════
+
+STEP 4 — Extract the ZIP file
+──────────────────────────────
+1. Find the file you downloaded: synthetic-bot.zip
+2. Right-click on it
+3. Click "Extract All..."
+4. Choose where to extract — for example your Desktop
+5. Click "Extract"
+6. You now have a folder called: synthetic-bot
+   It should be at something like:
+   C:\Users\YourName\Desktop\synthetic-bot
+
+STEP 5 — Open PowerShell in the bot folder
+────────────────────────────────────────────
+Method (easiest):
+1. Open the synthetic-bot folder in File Explorer
+2. Click in the address bar at the top (where it shows the path)
+3. Type:  powershell
+4. Press Enter
+5. A PowerShell window opens already inside your bot folder ✅
+
+You should see something like:
+   PS C:\Users\dell\Desktop\synthetic-bot>
+
+STEP 6 — Allow scripts to run (one time only)
+───────────────────────────────────────────────
+Copy and paste this EXACTLY into PowerShell, then press Enter:
+
+   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+If it asks you to confirm, type:  Y   and press Enter.
+
+
+═══════════════════════════════════════════════════════
+  PART 3 — CREATE THE VIRTUAL ENVIRONMENT
+═══════════════════════════════════════════════════════
+
+What is a virtual environment?
+→ It is a private space for the bot's Python packages.
+  It keeps the bot's files separate from everything else
+  on your computer. You only do this once.
+
+STEP 7 — Create the virtual environment
+─────────────────────────────────────────
+In PowerShell, type this and press Enter:
+
+   python -m venv venv
+
+Wait a few seconds. No output = it worked. ✅
+
+STEP 8 — Activate the virtual environment
+──────────────────────────────────────────
+Type this and press Enter:
+
+   .\venv\Scripts\Activate.ps1
+
+You should now see (venv) at the start of the line:
+   (venv) PS C:\Users\dell\Desktop\synthetic-bot>
+
+If you see (venv) → you are inside the environment ✅
+If you get an error → make sure you did Step 6 first.
+
+⚠️  IMPORTANT: Every time you open a NEW PowerShell window
+to run the bot, you MUST run this activate command again.
+The (venv) must always be showing before you run the bot.
+
+
+═══════════════════════════════════════════════════════
+  PART 4 — INSTALL THE BOT'S PACKAGES
+═══════════════════════════════════════════════════════
+
+STEP 9 — Upgrade pip (the package installer)
+──────────────────────────────────────────────
+Type this and press Enter:
+
+   python -m pip install --upgrade pip
+
+Wait for it to finish.
+
+STEP 10 — Install all required packages
+─────────────────────────────────────────
+Your internet may block the default package server.
+Use this command which uses a faster mirror server:
+
+   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 120
+
+This will download and install about 10 packages.
+It may take 2–5 minutes. You will see lots of text scrolling.
+
+Wait until you see:   Successfully installed ...
+
+✅ If successful → move to Part 5
+❌ If it fails → try this alternative mirror instead:
+
+   pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple --timeout 120
+
+
+═══════════════════════════════════════════════════════
+  PART 5 — GET YOUR DERIV API TOKENS
+═══════════════════════════════════════════════════════
+
+You need tokens to connect the bot to your Deriv account.
+This is like giving the bot permission to read and trade.
+
+STEP 11 — Create your Demo API Token
+──────────────────────────────────────
+1. Open your browser and go to: https://app.deriv.com
+2. Log in to your Deriv account
+3. Click your Profile picture (top right corner)
+4. Click: "Security and safety"
+5. Click: "API token"
+6. In the "Token name" box type:  BotDemo
+7. Tick these boxes: ✅ Read   ✅ Trade
+8. Click "Create"
+9. Copy the token that appears — it looks like:
+   a1b2c3d4e5f6g7h8i9j0...
+   SAVE THIS — you will need it in Step 13
+
+STEP 12 — Create your Live API Token (same steps)
+───────────────────────────────────────────────────
+Repeat Step 11 but name it: BotLive
+Copy and save that token too.
+
+Note: Keep TRADING_MODE=demo in the .env file until
+you have tested the bot for at least 2 weeks on demo!
+
+
+═══════════════════════════════════════════════════════
+  PART 6 — CONFIGURE THE BOT
+═══════════════════════════════════════════════════════
+
+STEP 13 — Edit the .env file
+──────────────────────────────
+The .env file holds your secret settings.
+
+1. Open the synthetic-bot folder in File Explorer
+2. Find the file named: .env
+   (it may show as just "env" without a dot if extensions are hidden)
+3. Right-click on it → Open with → Notepad
+
+You will see this:
+
+   DERIV_APP_ID=1089
+   DERIV_DEMO_TOKEN=YOUR_DEMO_TOKEN_HERE
+   DERIV_LIVE_TOKEN=YOUR_LIVE_TOKEN_HERE
+   SECRET_KEY=mysecretkey123changeme
+   FLASK_PORT=5000
+   MAX_RISK_PER_TRADE=1.0
+   MAX_DAILY_LOSS=5.0
+   LOG_LEVEL=INFO
+
+4. Replace YOUR_DEMO_TOKEN_HERE with the token from Step 11
+5. Replace YOUR_LIVE_TOKEN_HERE with the token from Step 12
+6. Change SECRET_KEY to any random words, like:
+   SECRET_KEY=curtlas2024supersecret
+
+7. Save the file: Ctrl + S
+8. Close Notepad
+
+Example of a filled .env file:
+   DERIV_APP_ID=1089
+   DERIV_DEMO_TOKEN=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+   DERIV_LIVE_TOKEN=z9y8x7w6v5u4t3s2r1q0p9o8n7m6l5k4
+   SECRET_KEY=curtlas2024supersecret
+   FLASK_PORT=5000
+   MAX_RISK_PER_TRADE=1.0
+   MAX_DAILY_LOSS=5.0
+   LOG_LEVEL=INFO
+
+
+═══════════════════════════════════════════════════════
+  PART 7 — RUN THE BOT
+═══════════════════════════════════════════════════════
+
+STEP 14 — Start the bot
+─────────────────────────
+Make sure you are in PowerShell with (venv) showing.
+Type this and press Enter:
+
+   python app.py
+
+You will see:
+
+   ======================================
+    SyntheticBot Pro is starting...
+    Open your browser and go to:
+    http://localhost:5000
+   ======================================
+
+✅ The bot is now running!
+
+STEP 15 — Open the dashboard in your browser
+──────────────────────────────────────────────
+1. Open Google Chrome or Microsoft Edge
+2. In the address bar type:
+   http://localhost:5000
+3. Press Enter
+
+You will see the LOGIN page.
+
+STEP 16 — Create your account
+───────────────────────────────
+1. Click "Create one" (below the Sign In button)
+2. Choose a username (anything you like, e.g. curtlas)
+3. Choose a password (at least 6 characters)
+4. Confirm the password
+5. Click "Create Account"
+6. You will be taken to the login page
+7. Enter your username and password
+8. Click "Sign In"
+
+✅ You are now inside the trading dashboard!
+
+
+═══════════════════════════════════════════════════════
+  PART 8 — USING THE DASHBOARD
+═══════════════════════════════════════════════════════
+
+THE LEFT SIDEBAR (controls)
+────────────────────────────
+┌─────────────────────────────────────────┐
+│ ⚡ SyntheticBot                         │
+│                                         │
+│ [C] curtlas          ← your username    │
+│     DEMO             ← current mode     │
+│                                         │
+│ Account Balance                         │
+│ $10,000.00           ← live balance     │
+│ Daily P&L: 0.00%                        │
+│                                         │
+│ Account Mode                            │
+│ [DEMO]  [LIVE]       ← click to switch  │
+│                                         │
+│ Volatility Pair                         │
+│ R_10  Volatility 10  ← click any pair   │
+│ R_25  Volatility 25                     │
+│ R_50  Volatility 50  ← example: active  │
+│ R_75  Volatility 75                     │
+│ R_100 Volatility 100                    │
+│ ...more pairs...                        │
+│                                         │
+│ [▶  Start Bot]       ← click to start   │
+│                                         │
+│ ↩ Logout                                │
+└─────────────────────────────────────────┘
+
+HOW TO START TRADING
+─────────────────────
+1. Make sure mode is set to DEMO (always start here)
+2. Click on a Volatility Pair (e.g. R_50)
+3. Click [▶ Start Bot]
+4. The bot connects to Deriv and loads the charts
+5. Charts will appear with EMA 21 (red), 50 (purple), 100 (green)
+6. The bot monitors H4 and H1 for direction
+7. When H4 and H1 agree → it watches M15 for entry
+8. When price touches EMA 21 and reverses → trade opens
+9. Signal feed shows every signal in real time
+10. Trade history shows all trades with P&L
+
+THE ANALYSIS PANELS (below the chart)
+───────────────────────────────────────
+H4 Analysis → shows H4 direction and EMA values
+              "🟢 Uptrend — EMAs spread" = trending up
+              "⚠️ Consolidating — bot waiting" = no trade
+
+H1 Analysis → same for H1. BOTH must show same direction
+              before bot will enter any trade.
+
+M15 Execution → shows "✅ Monitoring M15 for entries"
+                when bot is actively looking for entry
+
+Session Stats → Total trades, Wins, Losses, P&L
+
+SWITCHING TIMEFRAMES ON THE CHART
+───────────────────────────────────
+Click M15 / H1 / H4 tabs in the top-right of the chart
+to switch which timeframe you are viewing.
+
+SWITCHING PAIRS
+────────────────
+1. Click [⏹ Stop Bot] first
+2. Click a different pair in the sidebar
+3. Click [▶ Start Bot] again
+
+GOING LIVE
+───────────
+Only after testing for 2+ weeks on demo:
+1. Click [LIVE] in the Account Mode section
+2. Select your pair
+3. Click [▶ Start Bot]
+The bot will now trade real money.
+
+HOW TO STOP THE BOT
+─────────────────────
+Option 1: Click [⏹ Stop Bot] in the dashboard
+Option 2: Go to PowerShell and press Ctrl + C
+
+
+═══════════════════════════════════════════════════════
+  PART 9 — STARTING THE BOT NEXT TIME
+═══════════════════════════════════════════════════════
+
+Every time you want to run the bot again after closing it:
+
+1. Open the synthetic-bot folder in File Explorer
+2. Click in the address bar → type powershell → Enter
+3. Type this and press Enter:
+   .\venv\Scripts\Activate.ps1
+
+4. You should see (venv) at the start of the line
+
+5. Type this and press Enter:
+   python app.py
+
+6. Open browser → go to http://localhost:5000
+7. Log in → Start Bot
+
+Those 3 commands are all you need every time:
+   .\venv\Scripts\Activate.ps1
+   python app.py
+   → open http://localhost:5000
+
+
+═══════════════════════════════════════════════════════
+  TROUBLESHOOTING — COMMON ERRORS
+═══════════════════════════════════════════════════════
+
+PROBLEM: python is not recognized
+FIX: Go back to Step 2. Make sure you ticked
+     "Add Python 3.8 to PATH" during installation.
+     Uninstall Python and reinstall with that box ticked.
+
+PROBLEM: Activate.ps1 cannot be loaded / not recognized
+FIX 1: Run Step 6 first (the Set-ExecutionPolicy command)
+FIX 2: Make sure you ran Step 7 (python -m venv venv) first
+FIX 3: Make sure your PowerShell is inside the synthetic-bot
+        folder (check the path shown before the >)
+
+PROBLEM: Connection timed out / pip install fails
+FIX: Use the mirror command from Step 10.
+     Try the Aliyun mirror if Tsinghua also fails.
+
+PROBLEM: ModuleNotFoundError: No module named 'flask'
+FIX: Packages not installed. Make sure (venv) is showing
+     then run the pip install command from Step 10 again.
+
+PROBLEM: Auth failed
+FIX: Check your .env file. Make sure DERIV_DEMO_TOKEN
+     has your real token. No spaces around the = sign.
+     Token should look like: a1b2c3d4e5f6...
+
+PROBLEM: No signals appearing
+FIX: This is NORMAL. The bot only trades HIGH QUALITY
+     setups. H4 and H1 must BOTH agree on direction AND
+     both must be trending (not consolidating).
+     Be patient — good setups come regularly.
+
+PROBLEM: Charts not loading
+FIX: Charts load from Deriv live data after you click
+     Start Bot. Wait 10-20 seconds after starting.
+
+PROBLEM: Port 5000 already in use
+FIX: Open .env file, change FLASK_PORT=5000 to FLASK_PORT=5001
+     Then go to http://localhost:5001 instead.
+
+PROBLEM: (venv) disappeared from PowerShell
+FIX: You opened a new PowerShell window. Run the activate
+     command again: .\venv\Scripts\Activate.ps1
+
+
+═══════════════════════════════════════════════════════
+  RISK WARNING
+═══════════════════════════════════════════════════════
+
+⚠️  ALWAYS start with DEMO mode
+⚠️  Test for at least 2 weeks before going live
+⚠️  The bot risks 1% of your balance per trade by default
+⚠️  The daily loss limit (5%) auto-pauses the bot
+⚠️  Never risk money you cannot afford to lose
+⚠️  Past results do not guarantee future performance
+
+The bot is a tool — not a guarantee of profit.
+Always monitor it and understand what it is doing.
+
+
+═══════════════════════════════════════════════════════
+  FILE STRUCTURE (what each file does)
+═══════════════════════════════════════════════════════
+
+synthetic-bot/
+├── app.py              ← START THIS FILE to run the bot
+├── bot_engine.py       ← Core trading logic per session
+├── strategy.py         ← Triple EMA signal engine
+├── indicators.py       ← EMA math + market filters
+├── broker.py           ← Connects to Deriv WebSocket
+├── risk_manager.py     ← Controls position size + safety
+├── database.py         ← Saves trades and signals
+├── config.py           ← All bot settings
+├── logger.py           ← Console + file logging
+├── requirements.txt    ← List of packages to install
+├── .env                ← YOUR API TOKENS (keep private!)
+├── templates/          ← Website pages (HTML)
+│   ├── login.html
+│   ├── register.html
+│   └── dashboard.html
+├── static/
+│   ├── css/style.css   ← Dashboard styling
+│   └── js/dashboard.js ← Dashboard behaviour
+├── strategies/
+│   ├── volatility_strategy.py
+│   ├── breakout_strategy.py  (placeholder)
+│   └── martingale.py         (placeholder, NOT active)
+├── data/
+│   └── market_data.db  ← Auto-created when bot starts
+└── logs/
+    └── bot.log         ← Auto-created when bot starts
+
+=======================================================
+  QUICK REFERENCE — COMMANDS YOU WILL USE
+=======================================================
+
+One-time setup (do once ever):
+  Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+  python -m venv venv
+  .\venv\Scripts\Activate.ps1
+  python -m pip install --upgrade pip
+  pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 120
+
+Every time you want to run the bot:
+  .\venv\Scripts\Activate.ps1
+  python app.py
+  → open http://localhost:5000 in browser
+
+=======================================================

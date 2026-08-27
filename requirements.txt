@@ -1,0 +1,12 @@
+websockets==10.4
+aiohttp==3.9.5
+python-dotenv==1.0.0
+pandas==1.5.3
+numpy==1.24.3
+colorlog==6.7.0
+flask==2.3.3
+flask-socketio==5.3.6
+flask-sqlalchemy==3.0.5
+werkzeug==2.3.7
+eventlet==0.33.3
+simple-websocket==1.0.0

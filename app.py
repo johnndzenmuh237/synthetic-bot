@@ -1,0 +1,257 @@
+"""
+app.py — Flask web server
+Run with: python app.py
+Open: http://localhost:5000
+"""
+from flask import (Flask, render_template, request, redirect,
+                   url_for, session, jsonify, flash)
+from flask_socketio import SocketIO, emit, join_room
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
+
+from database import (init_db, create_user, get_user, get_user_by_id,
+                      get_recent_trades, get_stats)
+from bot_engine import BotSession
+from config import SECRET_KEY, FLASK_PORT, SYMBOLS, MIN_STAKE, MAX_STAKE, ALLOW_REGISTRATION
+
+app = Flask(__name__)
+app.secret_key = SECRET_KEY
+# async_mode="threading" instead of "eventlet": the trading bot runs on a
+# plain OS thread (threading.Thread in bot_engine.py) that calls
+# socketio.emit() from outside any Flask/SocketIO request context.
+# eventlet uses cooperative "green threads" and isn't safe to call into
+# from a real OS thread it doesn't control — that mismatch is what was
+# causing balance/candle updates to silently stop reaching the browser
+# after a while, with no error on the bot side. "threading" mode uses
+# real OS threads with proper locking throughout, so it's safe to emit
+# from the bot's thread at any time. Requires the "simple-websocket"
+# package for WebSocket transport support (pip install simple-websocket).
+socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
+
+# Active sessions: { user_id: BotSession }
+active_sessions = {}
+
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("user_id"):
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+# ── Pages ────────────────────────────────────────────────────
+@app.route("/")
+def index():
+    return redirect(url_for("dashboard") if session.get("user_id") else url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = get_user(username)
+        if user and check_password_hash(user["password_hash"], password):
+            session["user_id"]  = user["id"]
+            session["username"] = user["username"]
+            return redirect(url_for("dashboard"))
+        flash("Invalid username or password.", "error")
+    return render_template("login.html")
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    # Every account that registers here shares the SAME Deriv token
+    # (set once in the environment, not per-user) — anyone who signs up
+    # can trade on your Deriv account. Set ALLOW_REGISTRATION=false once
+    # you've created your own login to lock the signup page.
+    if not ALLOW_REGISTRATION:
+        flash("Registration is currently closed.", "error")
+        return redirect(url_for("login"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        confirm  = request.form.get("confirm_password", "")
+        if not username or not password:
+            flash("Username and password are required.", "error")
+        elif password != confirm:
+            flash("Passwords do not match.", "error")
+        elif len(password) < 6:
+            flash("Password must be at least 6 characters.", "error")
+        else:
+            if create_user(username, generate_password_hash(password)):
+                flash("Account created! Please log in.", "success")
+                return redirect(url_for("login"))
+            else:
+                flash("Username already taken.", "error")
+    return render_template("register.html")
+
+
+@app.route("/logout")
+def logout():
+    uid = session.get("user_id")
+    if uid and uid in active_sessions:
+        active_sessions[uid].stop()
+        del active_sessions[uid]
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    uid    = session["user_id"]
+    user   = get_user_by_id(uid)
+    trades = get_recent_trades(uid, 20)
+    stats  = get_stats(uid)
+    return render_template("dashboard.html",
+                           username=user["username"],
+                           symbols=SYMBOLS,
+                           trades=trades,
+                           stats=stats,
+                           min_stake=MIN_STAKE,
+                           max_stake=MAX_STAKE)
+
+
+# ── Bot API ──────────────────────────────────────────────────
+@app.route("/api/bot/start", methods=["POST"])
+@login_required
+def api_start_bot():
+    uid  = session["user_id"]
+    data = request.json or {}
+
+    symbol        = data.get("symbol", "R_50")
+    mode          = data.get("mode", "demo")
+    lot_size      = float(data.get("lot_size", 1.0))
+    max_positions = int(data.get("max_positions", 1))
+
+    if symbol not in SYMBOLS:
+        return jsonify({"ok": False, "error": "Invalid symbol"}), 400
+    if mode not in ("demo", "live"):
+        return jsonify({"ok": False, "error": "Mode must be demo or live"}), 400
+    if lot_size < MIN_STAKE:
+        return jsonify({"ok": False,
+                        "error": "Minimum lot size is {}".format(MIN_STAKE)}), 400
+    if max_positions < 1 or max_positions > 10:
+        return jsonify({"ok": False,
+                        "error": "Max positions must be between 1 and 10"}), 400
+
+    # Stop existing session
+    if uid in active_sessions:
+        active_sessions[uid].stop()
+        del active_sessions[uid]
+
+    sid = "user_{}".format(uid)
+
+    def emit_to_user(event, payload):
+        socketio.emit(event, payload, room=sid)
+
+    sess = BotSession(
+        user_id       = uid,
+        symbol        = symbol,
+        mode          = mode,
+        emit_fn       = emit_to_user,
+        lot_size      = lot_size,
+        max_positions = max_positions,
+    )
+    active_sessions[uid] = sess
+    sess.start()
+
+    return jsonify({
+        "ok":           True,
+        "symbol":       symbol,
+        "mode":         mode,
+        "lot_size":     lot_size,
+        "max_positions": max_positions,
+    })
+
+
+@app.route("/api/bot/stop", methods=["POST"])
+@login_required
+def api_stop_bot():
+    uid = session["user_id"]
+    if uid in active_sessions:
+        active_sessions[uid].stop()
+        del active_sessions[uid]
+    return jsonify({"ok": True})
+
+
+@app.route("/api/bot/update", methods=["POST"])
+@login_required
+def api_update_bot():
+    """Update lot size / max positions while bot is running."""
+    uid  = session["user_id"]
+    data = request.json or {}
+    sess = active_sessions.get(uid)
+    if not sess:
+        return jsonify({"ok": False, "error": "Bot not running"}), 400
+
+    lot_size      = data.get("lot_size")
+    max_positions = data.get("max_positions")
+
+    if lot_size is not None and float(lot_size) < MIN_STAKE:
+        return jsonify({"ok": False,
+                        "error": "Minimum lot size is {}".format(MIN_STAKE)}), 400
+
+    sess.update_settings(
+        lot_size      = float(lot_size) if lot_size else None,
+        max_positions = int(max_positions) if max_positions else None,
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/bot/status")
+@login_required
+def api_bot_status():
+    uid  = session["user_id"]
+    sess = active_sessions.get(uid)
+    if sess:
+        return jsonify({
+            "running":       sess.running,
+            "symbol":        sess.symbol,
+            "mode":          sess.mode,
+            "balance":       sess.broker.balance,
+            "currency":      sess.broker.currency,
+            "account_id":    sess.broker.account_id,
+            "lot_size":      sess.lot_size,
+            "max_positions": sess.max_positions,
+        })
+    return jsonify({"running": False})
+
+
+@app.route("/api/trades")
+@login_required
+def api_trades():
+    uid = session["user_id"]
+    return jsonify({
+        "trades": get_recent_trades(uid, 50),
+        "stats":  get_stats(uid),
+    })
+
+
+# ── SocketIO ─────────────────────────────────────────────────
+@socketio.on("connect")
+def on_connect():
+    uid = session.get("user_id")
+    if uid:
+        join_room("user_{}".format(uid))
+        emit("connected", {"message": "WebSocket connected"})
+
+
+@socketio.on("disconnect")
+def on_disconnect():
+    pass
+
+
+# ── Entry point ──────────────────────────────────────────────
+if __name__ == "__main__":
+    init_db()
+    print("")
+    print("  ==========================================")
+    print("   SyntheticBot Pro — Starting...")
+    print("   Open browser → http://localhost:{}".format(FLASK_PORT))
+    print("  ==========================================")
+    print("")
+    socketio.run(app, host="0.0.0.0", port=FLASK_PORT, debug=False)

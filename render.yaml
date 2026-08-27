@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: synthetic-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true       # Render generates a strong random secret for you
+      - key: DERIV_APP_ID
+        sync: false               # set manually in the Render dashboard — do not commit real values
+      - key: DERIV_DEMO_TOKEN
+        sync: false
+      - key: DERIV_LIVE_TOKEN
+        sync: false
+      - key: ALLOW_REGISTRATION
+        value: "true"              # flip to "false" in the Render dashboard once you've signed up

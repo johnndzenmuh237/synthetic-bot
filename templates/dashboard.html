@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — SyntheticBot Pro{% endblock %}
+{% block head %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.js"></script>
+{% endblock %}
+{% block body %}
+
+<!-- Mobile top nav -->
+<nav class="mobile-nav">
+  <div class="mobile-logo">
+    <span class="logo-icon">⚡</span>
+    <span>Synthetic<span class="logo-pro">Bot</span></span>
+  </div>
+  <button class="hamburger" onclick="toggleSidebar()" aria-label="Menu">☰</button>
+</nav>
+
+<!-- Sidebar overlay (mobile) -->
+<div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+<div class="app">
+
+  <!-- ═══ SIDEBAR ════════════════════════════════════════ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <span class="logo-icon">⚡</span>
+      <span class="logo-text">Synthetic<span class="logo-pro">Bot</span></span>
+    </div>
+
+    <!-- Account -->
+    <div class="sidebar-section">
+      <div class="account-badge">
+        <div class="account-avatar">{{ username[0].upper() }}</div>
+        <div>
+          <div class="account-name">{{ username }}</div>
+          <div class="account-mode" id="mode-badge">DEMO</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Balance -->
+    <div class="sidebar-section">
+      <div class="balance-card">
+        <div class="balance-row">
+          <div>
+            <div class="balance-label">Balance</div>
+            <div class="balance-amount" id="balance-display">—</div>
+          </div>
+          <div class="balance-right">
+            <div class="balance-id" id="account-id-display">—</div>
+            <div class="balance-pnl" id="daily-pnl">P&L: 0.00%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mode -->
+    <div class="sidebar-section">
+      <div class="section-label">Account Mode</div>
+      <div class="mode-toggle">
+        <button class="mode-btn active" id="btn-demo" onclick="setMode('demo')">📊 DEMO</button>
+        <button class="mode-btn" id="btn-live" onclick="setMode('live')">💰 LIVE</button>
+      </div>
+      <div class="mode-warning" id="mode-warning">
+        ⚠️ LIVE mode uses real money. Ensure live token is set in .env
+      </div>
+    </div>
+
+    <!-- Pair -->
+    <div class="sidebar-section">
+      <div class="section-label">Volatility Pair</div>
+      <div class="pair-list">
+        {% for sym, name in symbols.items() %}
+        <button class="pair-btn {% if loop.first %}active{% endif %}"
+                data-symbol="{{ sym }}"
+                onclick="selectPair('{{ sym }}', this); closeSidebar()">
+          <span class="pair-sym">{{ sym }}</span>
+          <span class="pair-name">{{ name }}</span>
+        </button>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Lot Size -->
+    <div class="sidebar-section">
+      <div class="section-label">Lot Size (Stake per Trade)</div>
+      <div class="lot-control">
+        <button class="lot-btn" onclick="adjustLot(-0.10)">−−</button>
+        <button class="lot-btn" onclick="adjustLot(-0.01)">−</button>
+        <div class="lot-display-wrap">
+          <input type="number" id="lot-input" value="1.00"
+                 min="{{ min_stake }}" max="500" step="0.01"
+                 onchange="validateLot()" class="lot-input">
+          <div class="lot-usd" id="lot-usd-label">= $1.00 / trade</div>
+        </div>
+        <button class="lot-btn" onclick="adjustLot(0.01)">+</button>
+        <button class="lot-btn" onclick="adjustLot(0.10)">++</button>
+      </div>
+      <div class="lot-presets">
+        <button class="preset-btn" onclick="setLot(0.01)">0.01</button>
+        <button class="preset-btn" onclick="setLot(0.10)">0.10</button>
+        <button class="preset-btn" onclick="setLot(0.50)">0.50</button>
+        <button class="preset-btn active" onclick="setLot(1.00)">1.00</button>
+        <button class="preset-btn" onclick="setLot(5.00)">5.00</button>
+        <button class="preset-btn" onclick="setLot(10.00)">10.00</button>
+      </div>
+    </div>
+
+    <!-- Max Positions -->
+    <div class="sidebar-section">
+      <div class="section-label">Max Positions (Auto-place)</div>
+      <div class="pos-control">
+        <button class="pos-btn" onclick="adjustPositions(-1)">−</button>
+        <div class="pos-display-wrap">
+          <input type="number" id="positions-input" value="1"
+                 min="1" max="10" onchange="validatePositions()" class="pos-input">
+          <div class="pos-label-sub">positions per signal</div>
+        </div>
+        <button class="pos-btn" onclick="adjustPositions(1)">+</button>
+      </div>
+      <div class="pos-presets">
+        <button class="pos-preset active" onclick="setPositions(1)">1</button>
+        <button class="pos-preset" onclick="setPositions(2)">2</button>
+        <button class="pos-preset" onclick="setPositions(3)">3</button>
+        <button class="pos-preset" onclick="setPositions(5)">5</button>
+        <button class="pos-preset" onclick="setPositions(10)">10</button>
+      </div>
+      <div class="pos-total-risk" id="total-risk-label">
+        Total per signal: $1.00 × 1 = $1.00
+      </div>
+    </div>
+
+    <!-- Start/Stop -->
+    <div class="sidebar-section">
+      <button class="btn-start" id="bot-btn" onclick="toggleBot()">
+        <span id="bot-btn-icon">▶</span>
+        <span id="bot-btn-text">Start Bot</span>
+      </button>
+      <button class="btn-update" id="btn-update" onclick="updateSettings()">
+        ↻ Apply New Settings
+      </button>
+    </div>
+
+    <div class="sidebar-footer">
+      <a href="/logout" class="logout-link">↩ Logout</a>
+    </div>
+  </aside>
+
+  <!-- ═══ MAIN ════════════════════════════════════════════ -->
+  <main class="main">
+
+    <!-- Top bar -->
+    <div class="topbar">
+      <div class="topbar-left">
+        <span class="active-symbol" id="active-symbol-label">R_50</span>
+        <span class="active-name" id="active-name-label">Volatility 50 Index</span>
+        <span class="status-dot" id="status-dot"></span>
+        <span class="status-text" id="status-text">Idle</span>
+      </div>
+      <div class="topbar-right">
+        <div class="running-info" id="running-info">
+          <span class="ri-badge" id="ri-lot">Lot: 1.00</span>
+          <span class="ri-badge" id="ri-pos">Pos: 1</span>
+          <span class="ri-badge" id="ri-mode">DEMO</span>
+        </div>
+        <div class="tf-tabs">
+          <button class="tf-tab active" onclick="switchChart('M1')">M1</button>
+          <button class="tf-tab" onclick="switchChart('M5')">M5</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Error banner -->
+    <div class="error-banner" id="error-banner">
+      <span id="error-text"></span>
+      <button onclick="dismissError()">✕</button>
+    </div>
+
+    <!-- Chart -->
+    <div class="chart-section">
+      <div id="chart-container" class="chart-container">
+        <div class="chart-placeholder">
+          <div class="placeholder-icon">📊</div>
+          <div>Select a pair and tap Start Bot to load live charts</div>
+        </div>
+      </div>
+      <div class="chart-legend">
+        <span class="legend-item"><span class="dot dot-red"></span>EMA 10</span>
+        <span class="legend-item"><span class="dot dot-purple"></span>EMA 20</span>
+      </div>
+    </div>
+
+    <!-- Analysis panels -->
+    <div class="info-row">
+      <div class="info-card">
+        <div class="info-card-title">M5 Trend</div>
+        <div class="tf-direction neutral" id="h4-direction">—</div>
+        <div class="tf-emas">
+          <span>EMA10: <b id="h4-e21">—</b></span>
+          <span>EMA20: <b id="h4-e50">—</b></span>
+          <span>Close: <b id="h4-e100">—</b></span>
+        </div>
+        <div class="tf-trend" id="h4-trend">Waiting...</div>
+      </div>
+
+      <div class="info-card">
+        <div class="info-card-title">M1 Entry</div>
+        <div class="tf-direction neutral" id="h1-direction">—</div>
+        <div class="tf-emas">
+          <span>EMA10: <b id="h1-e21">—</b></span>
+          <span>EMA20: <b id="h1-e50">—</b></span>
+          <span>Close: <b id="h1-e100">—</b></span>
+        </div>
+        <div class="tf-trend" id="h1-trend">Waiting...</div>
+      </div>
+
+      <div class="info-card">
+        <div class="info-card-title">M1 Execution</div>
+        <div class="exec-rules">
+          <div class="exec-rule">📐 Entries on 1-min (M1) candles</div>
+          <div class="exec-rule">📊 M5 trend + structure must agree</div>
+          <div class="exec-rule">🎯 EMA10 pullback + bounce (Setup A)</div>
+          <div class="exec-rule" id="exec-status">⏳ Bot not running</div>
+        </div>
+      </div>
+
+      <div class="info-card">
+        <div class="info-card-title">Session Stats</div>
+        <div class="stats-grid">
+          <div class="stat-item"><span class="stat-val" id="stat-total">0</span><span class="stat-lbl">Trades</span></div>
+          <div class="stat-item"><span class="stat-val green" id="stat-wins">0</span><span class="stat-lbl">Wins</span></div>
+          <div class="stat-item"><span class="stat-val red" id="stat-losses">0</span><span class="stat-lbl">Losses</span></div>
+          <div class="stat-item"><span class="stat-val" id="stat-pnl">$0</span><span class="stat-lbl">P&L</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Signal feed + Trades -->
+    <div class="bottom-row">
+      <div class="feed-panel">
+        <div class="panel-title">📡 Live Signal Feed</div>
+        <div class="signal-list" id="signal-list">
+          <div class="empty-feed">Signals appear here when bot is running...</div>
+        </div>
+      </div>
+
+      <div class="feed-panel">
+        <div class="panel-title">📋 Trade History</div>
+        <div class="trade-list" id="trade-list">
+          {% if trades %}
+            {% for t in trades %}
+            <div class="trade-row">
+              <span class="trade-dir {{ t.direction.lower() }}">{{ t.direction }}</span>
+              <span class="trade-sym">{{ t.symbol }}</span>
+              <span class="trade-lot">L{{ "%.2f"|format(t.lot_size if t.lot_size else 1) }}</span>
+              <span class="trade-stake">${{ "%.2f"|format(t.stake) }}</span>
+              <span class="trade-pnl {% if t.pnl and t.pnl >= 0 %}green{% elif t.pnl %}red{% endif %}">
+                {% if t.pnl is not none %}{{ "%+.2f"|format(t.pnl) }}{% else %}OPEN{% endif %}
+              </span>
+              <span class="trade-status {{ t.status.lower() }}">{{ t.status }}</span>
+            </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty-feed">No trades yet</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

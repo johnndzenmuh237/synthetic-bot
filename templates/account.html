@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Account Management — ClaudeFX{% endblock %}
+{% block body %}
+
+<!-- Mobile top nav -->
+<nav class="mobile-nav">
+  <div class="mobile-logo">
+    <span class="logo-icon">⚡</span>
+    <span>Claude<span class="logo-pro">FX</span></span>
+  </div>
+  <button class="hamburger" onclick="toggleSidebar()" aria-label="Menu">☰</button>
+</nav>
+
+<!-- Sidebar overlay (mobile) -->
+<div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <span class="logo-icon">⚡</span>
+      <span class="logo-text">Claude<span class="logo-pro">FX</span></span>
+    </div>
+    <div class="sidebar-section">
+      <div class="account-badge">
+        <div class="account-avatar">{{ username[0].upper() }}</div>
+        <div><div class="account-name">{{ username }}</div></div>
+      </div>
+    </div>
+    <div class="sidebar-section pair-list">
+      <a class="pair-btn" href="/dashboard" onclick="closeSidebar()"><span class="pair-sym">📊 Signals</span><span class="pair-name">Trading dashboard</span></a>
+      <a class="pair-btn active" href="/account" onclick="closeSidebar()"><span class="pair-sym">👤 Account</span><span class="pair-name">Manage connection</span></a>
+      {% if is_admin %}
+      <a class="pair-btn" href="/admin" onclick="closeSidebar()"><span class="pair-sym">🛠 Admin</span><span class="pair-name">Client bot management</span></a>
+      {% endif %}
+    </div>
+    <div class="sidebar-footer">
+      <a href="/logout" class="logout-link">↩ Logout</a>
+    </div>
+  </aside>
+
+  <main class="main page-content">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}<div class="alert alert-{{ cat }}">{{ msg }}</div>{% endfor %}
+    {% endwith %}
+
+    <h2 style="margin-bottom:16px">ClaudeFX Account Manager</h2>
+
+    <!-- Deriv Connection -->
+    <div class="info-card" style="margin-bottom:16px;max-width:560px">
+      <div class="info-card-title">Deriv Connection</div>
+      {% if accounts %}
+        {% for acc in accounts %}
+        <div class="trade-row acc-connection-row">
+          <span class="status-dot running" style="display:inline-block"></span>
+          <span class="trade-sym" data-label="Account">{{ acc.loginid }}</span>
+          <span data-label="Type">{{ acc.account_type|capitalize }} · {{ acc.currency }}</span>
+          <button class="lot-btn" style="width:auto;padding:0 12px" data-label="" onclick="disconnectAccount('{{ acc.loginid }}')">Disconnect</button>
+        </div>
+        {% endfor %}
+        {% if balance is not none %}
+        <div class="balance-card" style="margin-top:12px">
+          <div class="balance-row">
+            <div><div class="balance-label">Live Bot Balance</div>
+              <div class="balance-amount">{{ currency }} {{ "%.2f"|format(balance) }}</div></div>
+          </div>
+        </div>
+        {% endif %}
+        <a href="{{ oauth_url }}" class="btn-update" style="display:inline-block;text-align:center;margin-top:12px;text-decoration:none">
+          + Connect another Deriv account
+        </a>
+      {% else %}
+        <p class="tf-trend" style="margin-bottom:12px">🔴 No Deriv account connected yet.</p>
+        <a href="{{ oauth_url }}" class="btn-start" style="display:inline-block;text-align:center;text-decoration:none">
+          Connect Deriv Account
+        </a>
+        <p class="mode-warning" style="display:block;margin-top:10px">
+          You'll be redirected to Deriv to log in and authorize ClaudeFX.
+          No password is ever shared with us.
+        </p>
+        <p style="margin-top:14px">
+          <a href="{{ signup_url }}" target="_blank" rel="noopener" class="pair-name" style="text-decoration:underline">
+            Don't have a Deriv account yet? Create one →
+          </a>
+        </p>
+      {% endif %}
+    </div>
+
+    <!-- Bot Management -->
+    <div class="info-card" style="margin-bottom:16px;max-width:560px">
+      <div class="info-card-title">Bot Management</div>
+      <p class="tf-direction {{ 'buy' if bot_summary=='RUNNING' else 'sell' if bot_summary=='STOPPED' else 'neutral' }}">
+        {% if bot_summary == 'RUNNING' %}🟢 RUNNING{% elif bot_summary == 'PAUSED' %}🟡 PAUSED{% else %}🔴 STOPPED{% endif %}
+      </p>
+      {% if accounts %}
+      <div class="lot-presets" style="margin-top:10px">
+        <select id="acc-symbol" class="lot-input" style="width:auto">
+          {% for sym, name in symbols.items() %}<option value="{{ sym }}">{{ sym }}</option>{% endfor %}
+        </select>
+        <select id="acc-mode" class="lot-input" style="width:auto">
+          <option value="demo">Demo</option>
+          <option value="live">Live</option>
+        </select>
+      </div>
+      <div class="lot-presets" style="margin-top:10px">
+        <button class="btn-start" onclick="clientStart()">▶ Start</button>
+        <button class="btn-update" onclick="clientPause()">⏸ Pause</button>
+        <button class="lot-btn" onclick="clientStop()" style="width:auto;padding:0 16px">⏹ Stop</button>
+      </div>
+      {% else %}
+      <p class="tf-trend">Connect a Deriv account above before starting the bot.</p>
+      {% endif %}
+    </div>
+
+    <!-- Performance -->
+    <div class="info-card" style="max-width:560px">
+      <div class="info-card-title">Performance</div>
+      <div class="stats-grid">
+        <div class="stat-item"><span class="stat-val" id="p-total">{{ stats.total or 0 }}</span><span class="stat-lbl">Trades</span></div>
+        <div class="stat-item"><span class="stat-val green" id="p-wins">{{ stats.wins or 0 }}</span><span class="stat-lbl">Wins</span></div>
+        <div class="stat-item"><span class="stat-val red" id="p-losses">{{ stats.losses or 0 }}</span><span class="stat-lbl">Losses</span></div>
+        <div class="stat-item"><span class="stat-val" id="p-pnl">${{ "%.2f"|format(stats.total_pnl or 0) }}</span><span class="stat-lbl">P&L</span></div>
+      </div>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+function disconnectAccount(loginid) {
+  if (!confirm("Disconnect " + loginid + "? Any running bot for it will stop.")) return;
+  fetch("/api/account/disconnect", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({loginid: loginid})
+  }).then(function(r){return r.json();}).then(function(){ location.reload(); });
+}
+function clientStart() {
+  var symbol = document.getElementById("acc-symbol").value;
+  var mode   = document.getElementById("acc-mode").value;
+  fetch("/api/bot/start", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({symbol: symbol, mode: mode, lot_size: 1.0, max_positions: 1})
+  }).then(function(r){return r.json();}).then(function(d){
+    if (d.ok) location.reload(); else alert(d.error || "Could not start bot");
+  });
+}
+function clientPause() {
+  var symbol = document.getElementById("acc-symbol").value;
+  fetch("/api/bot/pause", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({symbol: symbol})
+  }).then(function(){ location.reload(); });
+}
+function clientStop() {
+  var symbol = document.getElementById("acc-symbol").value;
+  fetch("/api/bot/stop", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({symbol: symbol})
+  }).then(function(){ location.reload(); });
+}
+</script>
+{% endblock %}

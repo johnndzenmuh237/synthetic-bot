@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Admin — Client Bot Management{% endblock %}
+{% block body %}
+<div class="app">
+  <aside class="sidebar" id="sidebar" style="position:static">
+    <div class="sidebar-logo">
+      <span class="logo-icon">⚡</span>
+      <span class="logo-text">Claude<span class="logo-pro">FX</span></span>
+    </div>
+    <div class="sidebar-section">
+      <div class="account-badge">
+        <div class="account-avatar">{{ username[0].upper() }}</div>
+        <div><div class="account-name">{{ username }}</div><div class="account-mode">ADMIN</div></div>
+      </div>
+    </div>
+    <div class="sidebar-section pair-list">
+      <a class="pair-btn" href="/dashboard"><span class="pair-sym">📊 Signals</span><span class="pair-name">Trading dashboard</span></a>
+      <a class="pair-btn" href="/account"><span class="pair-sym">👤 Account</span><span class="pair-name">Manage connection</span></a>
+      <a class="pair-btn active" href="/admin"><span class="pair-sym">🛠 Admin</span><span class="pair-name">Client bot management</span></a>
+    </div>
+    <div class="sidebar-footer">
+      <a href="/logout" class="logout-link">↩ Logout</a>
+    </div>
+  </aside>
+
+  <main class="main page-content">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}<div class="alert alert-{{ cat }}">{{ msg }}</div>{% endfor %}
+    {% endwith %}
+
+    <h2 style="margin-bottom:4px">ClaudeFX Admin — Client Bot Management</h2>
+    <p class="tf-trend" style="margin-bottom:16px">
+      Each client trades on their OWN connected Deriv account — starting a
+      client's bot here never uses your account.
+    </p>
+
+    <div class="feed-panel" style="max-width:900px">
+      <div class="panel-title">Clients ({{ clients|length }})</div>
+      <div class="trade-list">
+        {% if not clients %}
+          <div class="empty-feed">No client accounts yet.</div>
+        {% endif %}
+        {% for c in clients %}
+        <div class="trade-row admin-client-row">
+          <span class="trade-sym" data-label="Client">{{ c.username }}</span>
+          <span data-label="Deriv Account">{{ c.account or "Not connected" }}{% if c.account_type %} ({{ c.account_type }}){% endif %}</span>
+          <span data-label="Balance">{% if c.balance is not none %}${{ "%.2f"|format(c.balance) }}{% else %}—{% endif %}</span>
+          <span class="trade-status {{ 'win' if c.status=='RUNNING' else 'loss' if c.status=='STOPPED' else 'open' }}" data-label="Status">
+            {% if c.status == 'RUNNING' %}🟢 RUNNING{% elif c.status == 'PAUSED' %}🟡 PAUSED{% else %}🔴 STOPPED{% endif %}
+          </span>
+          <span class="admin-client-actions" data-label="Actions">
+            {% if c.status == 'STOPPED' %}
+              <button class="lot-btn" style="width:auto;padding:0 10px" onclick="adminStart({{ c.id }})">START</button>
+            {% elif c.status == 'RUNNING' %}
+              <button class="lot-btn" style="width:auto;padding:0 10px" onclick="adminPause({{ c.id }})">PAUSE</button>
+              <button class="lot-btn" style="width:auto;padding:0 10px" onclick="adminStop({{ c.id }})">STOP</button>
+            {% elif c.status == 'PAUSED' %}
+              <button class="lot-btn" style="width:auto;padding:0 10px" onclick="adminResume({{ c.id }})">RESUME</button>
+              <button class="lot-btn" style="width:auto;padding:0 10px" onclick="adminStop({{ c.id }})">STOP</button>
+            {% endif %}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="info-card" style="max-width:420px;margin-top:16px">
+      <div class="info-card-title">Start settings (used by START above)</div>
+      <select id="admin-symbol" class="lot-input" style="width:auto">
+        {% for sym, name in symbols.items() %}<option value="{{ sym }}">{{ sym }}</option>{% endfor %}
+      </select>
+      <select id="admin-mode" class="lot-input" style="width:auto">
+        <option value="demo">Demo</option>
+        <option value="live">Live</option>
+      </select>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+function adminAction(url, uid, extra) {
+  var body = Object.assign({user_id: uid}, extra || {});
+  fetch(url, {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify(body)
+  }).then(function(r){return r.json();}).then(function(d){
+    if (!d.ok) alert(d.error || "Action failed");
+    location.reload();
+  });
+}
+function adminStart(uid) {
+  var symbol = document.getElementById("admin-symbol").value;
+  var mode   = document.getElementById("admin-mode").value;
+  adminAction("/api/admin/bot/start", uid, {symbol: symbol, mode: mode, lot_size: 1.0, max_positions: 1});
+}
+function adminPause(uid)  { adminAction("/api/admin/bot/pause", uid); }
+function adminResume(uid) { adminAction("/api/admin/bot/resume", uid); }
+function adminStop(uid)   { adminAction("/api/admin/bot/stop", uid); }
+</script>
+{% endblock %}

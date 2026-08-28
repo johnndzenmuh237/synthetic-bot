@@ -254,4 +254,11 @@ if __name__ == "__main__":
     print("   Open browser → http://localhost:{}".format(FLASK_PORT))
     print("  ==========================================")
     print("")
-    socketio.run(app, host="0.0.0.0", port=FLASK_PORT, debug=False)
+    # allow_unsafe_werkzeug=True: newer Flask-SocketIO refuses to run its
+    # built-in dev server unless explicitly confirmed. Since async_mode is
+    # "threading" (not eventlet/gevent — see the comment above), Werkzeug's
+    # dev server is what actually serves requests here even in production
+    # on Render. This is a reasonable tradeoff for a personal-use dashboard
+    # behind Render's HTTPS proxy; it is not meant for high-traffic public use.
+    socketio.run(app, host="0.0.0.0", port=FLASK_PORT, debug=False,
+                 allow_unsafe_werkzeug=True)

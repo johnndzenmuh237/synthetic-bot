@@ -37,6 +37,14 @@ def init_db():
             ema21 REAL, ema50 REAL, ema100 REAL, close_price REAL,
             created_at  TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS bot_state (
+            user_id       INTEGER PRIMARY KEY,
+            symbol        TEXT,
+            mode          TEXT,
+            lot_size      REAL,
+            max_positions INTEGER,
+            updated_at    TEXT DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS trades (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id      INTEGER,
@@ -125,6 +133,41 @@ def save_signal(symbol, tf, direction, ema21, ema50, ema100, close):
         (symbol, tf, direction, ema21, ema50, ema100, close))
     con.commit()
     con.close()
+
+
+# ── Bot running-state persistence (survives server restarts) ──
+def save_bot_state(user_id, symbol, mode, lot_size, max_positions):
+    """Records that this user's bot should be running. Read back on
+    server startup so the bot resumes automatically after any restart
+    (deploy, crash, Render waking back up) instead of staying off until
+    someone manually clicks Start again."""
+    con = _conn()
+    con.execute("""
+        INSERT INTO bot_state (user_id, symbol, mode, lot_size, max_positions, updated_at)
+        VALUES (?,?,?,?,?, datetime('now'))
+        ON CONFLICT(user_id) DO UPDATE SET
+            symbol=excluded.symbol, mode=excluded.mode,
+            lot_size=excluded.lot_size, max_positions=excluded.max_positions,
+            updated_at=excluded.updated_at
+    """, (user_id, symbol, mode, lot_size, max_positions))
+    con.commit()
+    con.close()
+
+
+def clear_bot_state(user_id):
+    con = _conn()
+    con.execute("DELETE FROM bot_state WHERE user_id=?", (user_id,))
+    con.commit()
+    con.close()
+
+
+def get_all_bot_states():
+    """All users whose bot should currently be running — used on server
+    startup to auto-resume them."""
+    con = _conn()
+    rows = con.execute("SELECT * FROM bot_state").fetchall()
+    con.close()
+    return [dict(r) for r in rows]
 
 
 # ── Trades ───────────────────────────────────────────────────

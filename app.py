@@ -10,9 +10,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 
 from database import (init_db, create_user, get_user, get_user_by_id,
-                      get_recent_trades, get_stats)
+                      get_recent_trades, get_stats,
+                      save_bot_state, clear_bot_state, get_all_bot_states)
 from bot_engine import BotSession
 from config import SECRET_KEY, FLASK_PORT, SYMBOLS, MIN_STAKE, MAX_STAKE, ALLOW_REGISTRATION
+from logger import log
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -30,6 +32,35 @@ socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
 
 # Active sessions: { user_id: BotSession }
 active_sessions = {}
+
+
+def _resume_bots_on_startup():
+    """Runs once when the server process boots (after init_db(), see the
+    bottom of this file). Restarts any bot that was running before this
+    restart (a Render redeploy, a crash, waking back up from being asleep)
+    — without this, a server restart would silently leave the bot off
+    until someone manually opened the dashboard and clicked Start again,
+    which defeats 'keep running unless I stop it'."""
+    for state in get_all_bot_states():
+        uid = state["user_id"]
+        sid = "user_{}".format(uid)
+
+        def emit_to_user(event, payload, _sid=sid):
+            socketio.emit(event, payload, room=_sid)
+
+        sess = BotSession(
+            user_id       = uid,
+            symbol        = state["symbol"],
+            mode          = state["mode"],
+            emit_fn       = emit_to_user,
+            lot_size      = state["lot_size"],
+            max_positions = state["max_positions"],
+        )
+        active_sessions[uid] = sess
+        sess.start()
+        log.info("Auto-resumed bot for user=%s symbol=%s mode=%s "
+                 "(was running before this server restart)",
+                 uid, state["symbol"], state["mode"])
 
 
 def login_required(f):
@@ -91,10 +122,9 @@ def register():
 
 @app.route("/logout")
 def logout():
-    uid = session.get("user_id")
-    if uid and uid in active_sessions:
-        active_sessions[uid].stop()
-        del active_sessions[uid]
+    # Logging out only ends the browser session — it must NOT stop the
+    # trading bot. The bot keeps running server-side, exactly as it did
+    # before you logged in, until you explicitly click Stop.
     session.clear()
     return redirect(url_for("login"))
 
@@ -158,6 +188,11 @@ def api_start_bot():
     )
     active_sessions[uid] = sess
     sess.start()
+    # Persist so the server can auto-resume this bot after any restart
+    # (deploy, crash, Render waking back up) without needing anyone to
+    # click Start again — the strategy requires the bot to keep running
+    # until manually stopped.
+    save_bot_state(uid, symbol, mode, lot_size, max_positions)
 
     return jsonify({
         "ok":           True,
@@ -175,6 +210,7 @@ def api_stop_bot():
     if uid in active_sessions:
         active_sessions[uid].stop()
         del active_sessions[uid]
+    clear_bot_state(uid)   # explicit stop — do NOT auto-resume this one on restart
     return jsonify({"ok": True})
 
 
@@ -248,6 +284,7 @@ def on_disconnect():
 # ── Entry point ──────────────────────────────────────────────
 if __name__ == "__main__":
     init_db()
+    _resume_bots_on_startup()
     print("")
     print("  ==========================================")
     print("   SyntheticBot Pro — Starting...")

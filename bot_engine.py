@@ -42,6 +42,7 @@ class BotSession:
         self.lot_size      = float(lot_size)
         self.max_positions = int(max_positions)
         self.running       = False
+        self._stop_requested = False
         self.broker        = DerivBroker(mode)
         self.risk          = None
         self.loop          = None
@@ -50,6 +51,7 @@ class BotSession:
 
     def start(self):
         self.running = True
+        self._stop_requested = False
         t = threading.Thread(target=self._run_loop, daemon=True)
         t.start()
         log.info("Bot started | user=%s symbol=%s mode=%s lot=%.2f maxpos=%d",
@@ -57,6 +59,7 @@ class BotSession:
                  self.lot_size, self.max_positions)
 
     def stop(self):
+        self._stop_requested = True
         self.running = False
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(
@@ -75,27 +78,54 @@ class BotSession:
                  self.lot_size, self.max_positions)
 
     def _run_loop(self):
-        # Create and register the event loop for this thread FIRST.
-        # Nothing that touches asyncio primitives (Lock, Event, etc.)
-        # may be constructed before set_event_loop() runs, or it will
-        # fail with "There is no current event loop in thread ...".
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-        try:
-            self.loop.run_until_complete(self._main())
-        except ConnectionError as e:
-            log.error("Connection error: %s", e)
-            self._emit_status("error", str(e))
-        except Exception as e:
-            # Some exceptions (e.g. certain websockets close errors) have
-            # an empty str(e); fall back to type name + repr so the log
-            # line is never just "Bot session error:" with nothing after it.
-            detail = str(e) or repr(e) or type(e).__name__
-            log.error("Bot session error: %s", detail)
-            self._emit_status("error", "Bot error: {}".format(detail))
-        finally:
-            self.running = False
-            self._emit_status("stopped", "Bot stopped")
+        """
+        Self-healing loop: the strategy doc requires the bot to keep running
+        unless the user explicitly stops it. Previously, any unhandled
+        exception here (a dropped connection that couldn't recover, a bad
+        API response, etc.) would silently end the thread forever while the
+        dashboard still showed 'running'. Now it retries with backoff
+        instead, and only stops for real when stop() was actually called.
+        """
+        backoff = 5
+        while not self._stop_requested:
+            # Create and register the event loop for this thread FIRST.
+            # Nothing that touches asyncio primitives (Lock, Event, etc.)
+            # may be constructed before set_event_loop() runs, or it will
+            # fail with "There is no current event loop in thread ...".
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            try:
+                self.loop.run_until_complete(self._main())
+            except ConnectionError as e:
+                log.error("Connection error: %s", e)
+                self._emit_status("error", str(e))
+            except Exception as e:
+                # Some exceptions (e.g. certain websockets close errors) have
+                # an empty str(e); fall back to type name + repr so the log
+                # line is never just "Bot session error:" with nothing after it.
+                detail = str(e) or repr(e) or type(e).__name__
+                log.error("Bot session error: %s", detail)
+                self._emit_status("error", "Bot error: {}".format(detail))
+            finally:
+                try:
+                    self.loop.close()
+                except Exception:
+                    pass
+
+            if self._stop_requested:
+                break
+
+            log.warning("Bot loop ended unexpectedly — auto-restarting in %ds "
+                        "(strategy requires the bot to keep running until "
+                        "manually stopped)...", backoff)
+            self._emit_status("reconnecting",
+                "Bot hit an error — retrying in {}s...".format(backoff))
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)   # cap retry gap at 60s
+            self.running = True              # mark running again for the retry
+
+        self.running = False
+        self._emit_status("stopped", "Bot stopped")
 
     async def _main(self):
         # The lock is created here, inside the running loop, so it

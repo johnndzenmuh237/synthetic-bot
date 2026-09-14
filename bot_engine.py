@@ -308,40 +308,33 @@ class BotSession:
                 if stake < 0.01:
                     continue
 
-                if self.mode == "demo":
-                    log.info("DEMO TRADE #%d/2 | %s %s | Stake=$%.2f Target=%.5f",
-                             pos_num, signal.direction, self.symbol, stake, target)
+                # Both demo and live place a REAL Deriv contract — the only
+                # difference is which token self.broker was constructed
+                # with (DERIV_DEMO_TOKEN vs DERIV_LIVE_TOKEN), so demo
+                # trades genuinely execute against your Deriv demo account
+                # and its balance updates for real, exactly like live does.
+                contract = await self.broker.place_trade(
+                    self.symbol, signal.direction, stake)
+                if contract:
                     open_trade(
                         user_id=self.user_id, symbol=self.symbol,
                         direction=signal.direction, lot_size=self.lot_size,
                         stake=stake, entry=signal.close_price, sl=signal.stop_loss,
-                        tp=target, contract_id="DEMO_{}_{}".format(trade_group, pos_num),
-                        mode="demo", position_num=pos_num,
+                        tp=target, contract_id=str(contract.get("contract_id", "")),
+                        mode=self.mode, position_num=pos_num,
                         trade_group=trade_group, target_price=target,
                         r_distance=signal.r_distance,
+                        buy_price=float(contract.get("buy_price", stake)),
                     )
                 else:
-                    contract = await self.broker.place_trade(
-                        self.symbol, signal.direction, stake)
-                    if contract:
-                        open_trade(
-                            user_id=self.user_id, symbol=self.symbol,
-                            direction=signal.direction, lot_size=self.lot_size,
-                            stake=stake, entry=signal.close_price, sl=signal.stop_loss,
-                            tp=target, contract_id=str(contract.get("contract_id", "")),
-                            mode="live", position_num=pos_num,
-                            trade_group=trade_group, target_price=target,
-                            r_distance=signal.r_distance,
-                        )
-                    else:
-                        log.error("Failed to place TP%d leg for signal", pos_num)
-                        break
+                    log.error("Failed to place TP%d leg for signal", pos_num)
+                    break
 
-            # Refresh balance after trades
-            if self.mode == "live":
-                bal = await self.broker.get_balance()
-                self.risk.update_balance(bal)
-                self._emit_balance(bal)
+            # Refresh balance after trades (demo and live both hold a real
+            # Deriv account balance now)
+            bal = await self.broker.get_balance()
+            self.risk.update_balance(bal)
+            self._emit_balance(bal)
 
             self._emit_trade_update()
 
@@ -406,20 +399,33 @@ class BotSession:
 
             log.info("EXIT trade #%d (leg %s) | %s", trade["id"], trade["position_num"], exit_reason)
 
-            if self.mode == "live" and not str(trade["contract_id"]).startswith("DEMO_"):
-                sold   = await self.broker.close_trade(trade["contract_id"])
-                exit_p = float(sold.get("sold_for", exit_p)) if sold else exit_p
+            # Every trade (demo and live) is a real Deriv contract now, so
+            # always sell it for real instead of guessing an exit price.
+            sold = await self.broker.close_trade(trade["contract_id"])
+            if sold:
+                exit_p = float(sold.get("sold_for", exit_p))
+            else:
+                log.error("Failed to close trade #%d on Deriv — will retry "
+                          "next cycle rather than mark it closed incorrectly.",
+                          trade["id"])
+                continue
 
-            # Stake-proportional P&L (see risk_manager note: CALL/PUT
-            # contracts have a fixed payout, not a linear price/P&L
-            # relationship — this is a simplified proxy for demo tracking).
-            price_move_pct = (exit_p - entry) / entry if entry else 0
-            if direction == "SELL":
-                price_move_pct = -price_move_pct
-            pnl = round(float(trade["stake"]) * price_move_pct * 10, 2)
+            # Real realized P&L, straight from Deriv's own numbers — not an
+            # approximation. buy_price is what Deriv actually charged to
+            # open the contract; sold_for is what it actually paid back.
+            buy_price = float(trade["buy_price"]) or float(trade["stake"])
+            pnl = round(exit_p - buy_price, 2)
             status = "WIN" if pnl >= 0 else "LOSS"
 
             close_trade(trade["id"], exit_p, pnl, status)
+
+            # Deriv's sell response includes the account's exact balance
+            # right after this trade — use it directly instead of waiting
+            # for the next periodic balance refresh.
+            if "balance_after" in sold:
+                bal = float(sold["balance_after"])
+                self.risk.update_balance(bal)
+                self._emit_balance(bal)
 
             # TP1 leg closed as a win -> move the sibling TP2 leg's SL to breakeven
             if hit_tp and trade["position_num"] == 1 and status == "WIN" and trade["trade_group"]:

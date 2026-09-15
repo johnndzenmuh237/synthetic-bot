@@ -276,9 +276,26 @@ def api_trades():
 @socketio.on("connect")
 def on_connect():
     uid = session.get("user_id")
-    if uid:
-        join_room("user_{}".format(uid))
-        emit("connected", {"message": "WebSocket connected"})
+    if not uid:
+        return
+    join_room("user_{}".format(uid))
+    emit("connected", {"message": "WebSocket connected"})
+
+    # If this user's bot is already running (auto-resumed on server boot,
+    # or just running from before this browser tab opened/reopened), the
+    # one-time initial candle history was already sent into the room back
+    # when the bot started — possibly before this socket ever connected,
+    # so it was missed entirely. Replay it now, directly to this socket,
+    # so the chart always has something to draw regardless of when the
+    # browser joined relative to when the bot started.
+    sess = active_sessions.get(uid)
+    if sess and sess.candles:
+        # Snapshot with dict()/list() first: the bot's background thread
+        # may be appending new candles concurrently, and iterating the
+        # live dict/list directly here could race with that.
+        for tf, candles in dict(sess.candles).items():
+            emit("candles_init", {
+                "tf": tf, "symbol": sess.symbol, "candles": list(candles)[-200:]})
 
 
 @socketio.on("disconnect")

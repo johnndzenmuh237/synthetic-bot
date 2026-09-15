@@ -4,7 +4,7 @@
 var state = {
   symbol: "R_50", mode: "demo",
   botRunning: false, activeTf: "M1",
-  lotSize: 1.00, maxPositions: 1,
+  lotSize: 1.00, maxPositions: 2,
   charts: {}, candles: {}
 };
 
@@ -124,15 +124,15 @@ function updateLotDisplay() {
 
 // ── Max Positions ────────────────────────────────────────────
 function adjustPositions(delta) {
-  var cur  = parseInt(document.getElementById("positions-input").value) || 1;
-  var next = Math.max(1, Math.min(10, cur + delta));
+  var cur  = parseInt(document.getElementById("positions-input").value) || 2;
+  var next = Math.max(2, Math.min(10, cur + delta));
   document.getElementById("positions-input").value = next;
   state.maxPositions = next;
   updateTotalRisk();
 }
 
 function setPositions(val) {
-  val = Math.max(1, Math.min(10, parseInt(val)));
+  val = Math.max(2, Math.min(10, parseInt(val)));
   document.getElementById("positions-input").value = val;
   state.maxPositions = val;
   updateTotalRisk();
@@ -143,7 +143,7 @@ function setPositions(val) {
 
 function validatePositions() {
   var val = parseInt(document.getElementById("positions-input").value);
-  if (isNaN(val) || val < 1) val = 1;
+  if (isNaN(val) || val < 2) val = 2;
   if (val > 10) val = 10;
   document.getElementById("positions-input").value = val;
   state.maxPositions = val;
@@ -152,7 +152,7 @@ function validatePositions() {
 
 function updateTotalRisk() {
   var lot   = state.lotSize || 1;
-  var pos   = state.maxPositions || 1;
+  var pos   = state.maxPositions || 2;
   var total = Math.round(lot * pos * 100) / 100;
   document.getElementById("total-risk-label").textContent =
     "Total per signal: $" + lot.toFixed(2) + " × " + pos + " = $" + total.toFixed(2);
@@ -410,7 +410,7 @@ function toggleBot() {
     });
   } else {
     state.lotSize      = parseFloat(document.getElementById("lot-input").value) || 1.0;
-    state.maxPositions = parseInt(document.getElementById("positions-input").value) || 1;
+    state.maxPositions = parseInt(document.getElementById("positions-input").value) || 2;
     dismissError();
     showToast("Starting on " + state.symbol + " (" + state.mode.toUpperCase() + ")...");
     closeSidebar();
@@ -441,7 +441,7 @@ fetch("/api/bot/status").then(function(r) { return r.json(); }).then(function(d)
     state.symbol       = d.symbol;
     state.mode         = d.mode;
     state.lotSize      = d.lot_size      || 1.0;
-    state.maxPositions = d.max_positions || 1;
+    state.maxPositions = d.max_positions || 2;
     setMode(d.mode);
     document.getElementById("lot-input").value       = state.lotSize.toFixed(2);
     document.getElementById("positions-input").value = state.maxPositions;

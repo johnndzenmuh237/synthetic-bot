@@ -155,7 +155,10 @@ def api_start_bot():
     symbol        = data.get("symbol", "R_50")
     mode          = data.get("mode", "demo")
     lot_size      = float(data.get("lot_size", 1.0))
-    max_positions = int(data.get("max_positions", 1))
+    # Default is 2, not 1: every ClaudeFX signal opens 2 legs simultaneously
+    # (TP1 at 70%, TP2 at 30%) — with max_positions=1 the bot can never
+    # actually place a trade, and would fail completely silently.
+    max_positions = int(data.get("max_positions", 2))
 
     if symbol not in SYMBOLS:
         return jsonify({"ok": False, "error": "Invalid symbol"}), 400
@@ -164,9 +167,11 @@ def api_start_bot():
     if lot_size < MIN_STAKE:
         return jsonify({"ok": False,
                         "error": "Minimum lot size is {}".format(MIN_STAKE)}), 400
-    if max_positions < 1 or max_positions > 10:
+    if max_positions < 2 or max_positions > 10:
         return jsonify({"ok": False,
-                        "error": "Max positions must be between 1 and 10"}), 400
+                        "error": "Max positions must be at least 2 (each signal "
+                                 "opens a TP1 leg and a TP2 leg simultaneously), "
+                                 "up to 10"}), 400
 
     # Stop existing session
     if uid in active_sessions:

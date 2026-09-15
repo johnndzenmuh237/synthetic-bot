@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from indicators import (
-    compute_emas, m5_trend, pullback_entry, exit_signal,
+    compute_emas, m5_trend, m5_trend_debug, pullback_entry, exit_signal,
     candles_since_spike,
 )
 from config import (
@@ -71,21 +71,31 @@ def _boom_crash_ok(symbol, m5_df):
 
 
 def evaluate(m5_df, m1_df, symbol):
-    """Run the full ClaudeFX v2.0 decision chain. Returns a Signal or None."""
+    """Run the full ClaudeFX v2.0 decision chain. Returns a Signal or None.
+    Logs a one-line diagnostic on every call — not just when a signal
+    fires — so 'why hasn't it traded' is answerable from the logs instead
+    of being a silent black box."""
     if _in_daily_reset_window():
+        log.info("EVAL %s | skipped: inside daily reset window", symbol)
         return None
 
     m5 = compute_emas(m5_df, fast=EMA_TREND_FAST, slow=EMA_TREND_SLOW)
     m1 = compute_emas(m1_df, fast=EMA_ENTRY, slow=EMA_ENTRY)
 
-    direction = m5_trend(m5)
+    direction, trend_reason = m5_trend_debug(m5)
     if direction == "NONE":
+        log.info("EVAL %s | M5 trend: NONE (%s)", symbol, trend_reason)
         return None
 
     if not _boom_crash_ok(symbol, m5):
+        log.info("EVAL %s | M5 trend=%s but blocked: Boom/Crash spike-wait "
+                 "filter not satisfied", symbol, direction)
         return None
 
     if not pullback_entry(m1, direction):
+        log.info("EVAL %s | M5 trend=%s (%s) but no M1 EMA10 pullback "
+                 "confirmation yet — waiting for entry setup",
+                 symbol, direction, trend_reason)
         return None
 
     last  = m1.iloc[-1]
@@ -93,6 +103,9 @@ def evaluate(m5_df, m1_df, symbol):
 
     sl_distance = _stop_loss_distance(symbol, m5)
     if not sl_distance or sl_distance <= 0:
+        log.info("EVAL %s | M5 trend=%s + M1 pullback confirmed, but "
+                 "stop-loss distance is invalid (%s) — check STOP_LOSS_POINTS "
+                 "for this symbol in config.py", symbol, direction, sl_distance)
         return None
 
     if direction == "BUY":

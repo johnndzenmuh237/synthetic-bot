@@ -34,7 +34,7 @@ from logger import log
 
 class BotSession:
     def __init__(self, user_id, symbol, mode, emit_fn,
-                 lot_size=1.0, max_positions=1):
+                 lot_size=1.0, max_positions=2):
         self.user_id       = user_id
         self.symbol        = symbol
         self.mode          = mode           # "demo" or "live"
@@ -265,6 +265,9 @@ class BotSession:
             # 2 trades (TP1 leg + TP2 leg), so we need at least 2 free slots.
             slots = self.risk.positions_available()
             if slots < 2:
+                log.info("Blocked: only %d position slot(s) available, need "
+                         "2 (TP1+TP2 legs) — increase Max Positions to at "
+                         "least 2 in the dashboard.", slots)
                 return
 
             # Get signal

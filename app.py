@@ -132,8 +132,18 @@ def logout():
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    uid    = session["user_id"]
-    user   = get_user_by_id(uid)
+    uid  = session["user_id"]
+    user = get_user_by_id(uid)
+    if user is None:
+        # The session cookie points to a user_id that no longer exists in
+        # the database — happens if the database was reset (e.g. a Render
+        # redeploy without a persistent disk attached) while your browser
+        # still had an old login cookie. Clear the stale cookie and send
+        # them back to log in / register fresh, instead of a 500 crash.
+        session.clear()
+        flash("Your session expired — please log in again.", "error")
+        return redirect(url_for("login"))
+
     trades = get_recent_trades(uid, 20)
     stats  = get_stats(uid)
     return render_template("dashboard.html",

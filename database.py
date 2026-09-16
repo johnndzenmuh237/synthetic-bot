@@ -117,14 +117,28 @@ def get_user_by_id(user_id):
 
 # ── Candles ──────────────────────────────────────────────────
 def save_candle(symbol, tf, epoch, o, h, l, c):
-    con = _conn()
-    try:
-        con.execute(
-            "INSERT OR IGNORE INTO candles (symbol,tf,epoch,open,high,low,close) VALUES (?,?,?,?,?,?,?)",
-            (symbol, tf, epoch, o, h, l, c))
-        con.commit()
-    finally:
-        con.close()
+    """A transient 'database is locked' error here previously propagated
+    all the way up and crashed the entire history-load / bot session.
+    Retry briefly, then give up on just this one row rather than taking
+    the whole bot down over one write."""
+    import time as _time
+    for attempt in range(3):
+        con = _conn()
+        try:
+            con.execute(
+                "INSERT OR IGNORE INTO candles (symbol,tf,epoch,open,high,low,close) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (symbol, tf, epoch, o, h, l, c))
+            con.commit()
+            return
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() and attempt < 2:
+                _time.sleep(0.05 * (attempt + 1))
+                continue
+            log.error("save_candle failed for %s %s epoch=%s: %s", symbol, tf, epoch, e)
+            return
+        finally:
+            con.close()
 
 
 def save_signal(symbol, tf, direction, ema21, ema50, ema100, close):

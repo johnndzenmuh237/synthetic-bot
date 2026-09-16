@@ -183,30 +183,48 @@ class BotSession:
     async def _load_history(self):
         self._emit_status("loading", "Loading chart data for {}...".format(self.symbol))
         for tf in [EXECUTION_TF] + ANALYSIS_TF:
-            raw = await self.broker.get_candles(self.symbol, tf)
-            if not raw:
-                log.warning("No candles returned for %s %s", self.symbol, tf)
-                continue
-            self.candles[tf] = [
-                {"epoch": c["epoch"],
-                 "open":  float(c["open"]),
-                 "high":  float(c["high"]),
-                 "low":   float(c["low"]),
-                 "close": float(c["close"])}
-                for c in raw
-            ]
-            # Run the synchronous DB writes in a background thread so the
-            # event loop stays free to answer Deriv's keepalive pings.
-            # 300 blocking sqlite writes in a row can easily exceed the
-            # ping_timeout window and get the connection killed with
-            # "keepalive ping timeout; no close frame received".
-            # (run_in_executor used instead of asyncio.to_thread for
-            # Python 3.8 compatibility — to_thread is 3.9+ only.)
-            await self.loop.run_in_executor(
-                None, self._save_candles_sync, self.symbol, tf, raw)
-            # Send chart data to frontend
-            self._emit_candles(tf, self.candles[tf][-200:])
-            log.info("Chart ready | %s %s | %d candles", self.symbol, tf, len(raw))
+            try:
+                raw = await self.broker.get_candles(self.symbol, tf)
+                if not raw:
+                    log.warning("No candles returned for %s %s — chart for "
+                                "this timeframe will stay empty until the "
+                                "next successful load.", self.symbol, tf)
+                    continue
+                self.candles[tf] = [
+                    {"epoch": c["epoch"],
+                     "open":  float(c["open"]),
+                     "high":  float(c["high"]),
+                     "low":   float(c["low"]),
+                     "close": float(c["close"])}
+                    for c in raw
+                ]
+                # Run the synchronous DB writes in a background thread so the
+                # event loop stays free to answer Deriv's keepalive pings.
+                # 300 blocking sqlite writes in a row can easily exceed the
+                # ping_timeout window and get the connection killed with
+                # "keepalive ping timeout; no close frame received".
+                # (run_in_executor used instead of asyncio.to_thread for
+                # Python 3.8 compatibility — to_thread is 3.9+ only.)
+                await self.loop.run_in_executor(
+                    None, self._save_candles_sync, self.symbol, tf, raw)
+                # Send chart data to frontend
+                self._emit_candles(tf, self.candles[tf][-200:])
+                log.info("Chart ready | %s %s | %d candles emitted to frontend",
+                         self.symbol, tf, len(self.candles[tf][-200:]))
+            except Exception as e:
+                # Previously, a failure loading/saving ANY one timeframe
+                # (e.g. a transient SQLite lock) silently aborted this
+                # whole method — including timeframes not yet processed —
+                # so the chart could end up with NO data at all even though
+                # the connection itself was fine. Now each timeframe is
+                # isolated: one failing doesn't block the others, and the
+                # bot keeps running (via the self-healing outer loop)
+                # instead of crash-looping on the same spot forever.
+                log.error("Failed to load history for %s %s: %s — "
+                          "continuing with other timeframes.",
+                          self.symbol, tf, str(e) or repr(e))
+                self._emit_status("error",
+                    "Chart load error ({}): {}".format(tf, str(e) or repr(e)))
 
     def _save_candles_sync(self, symbol, tf, raw):
         for c in raw:

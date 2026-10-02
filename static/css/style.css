@@ -406,7 +406,10 @@ html,body{
    CHART
    ══════════════════════════════════════════════════════════ */
 .chart-section{position:relative;flex-shrink:0}
-.chart-container{height:300px;background:var(--card);border-bottom:1px solid var(--b1)}
+.chart-container{height:300px;background:var(--card);border-bottom:1px solid var(--b1);position:relative}
+.chart-pane{position:absolute;top:0;left:0;right:0;bottom:0;display:none}
+.chart-pane.active{display:block}
+.chart-placeholder{position:absolute;top:0;left:0;right:0;bottom:0}
 .chart-placeholder{
   height:100%;display:flex;flex-direction:column;
   align-items:center;justify-content:center;

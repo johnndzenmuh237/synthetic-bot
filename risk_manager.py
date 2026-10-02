@@ -66,7 +66,7 @@ class RiskManager:
         """Check how many more positions we can open."""
         open_count = len(get_open_trades(self.user_id, self.mode))
         if open_count >= self.max_positions:
-            log.info("Max positions reached (%d/%d, %s mode).",
+            log.debug("Max positions reached (%d/%d, %s mode).",
                      open_count, self.max_positions, self.mode.upper())
             return False
         return True

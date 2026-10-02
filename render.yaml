@@ -2,19 +2,9 @@ services:
   - type: web
     name: synthetic-bot
     runtime: python
-    # Persistent disks require a paid plan — the Free plan cannot attach one
-    # at all, and its filesystem is wiped on every deploy anyway (which is
-    # also why Free can't run 24/7 unattended — see DEPLOYMENT.md).
-    plan: starter
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python app.py
-    disk:
-      name: bot-data
-      # Mounting exactly at the app's existing "data/" folder means no code
-      # change is needed — database.py already writes to data/market_data.db
-      # relative to the app's working directory, which resolves to this path.
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
     envVars:
       - key: SECRET_KEY
         generateValue: true       # Render generates a strong random secret for you

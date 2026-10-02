@@ -108,13 +108,13 @@
 
     <!-- Max Positions -->
     <div class="sidebar-section">
-      <div class="section-label">Max Positions (Auto-place)</div>
+      <div class="section-label">Max Open Trades</div>
       <div class="pos-control">
         <button class="pos-btn" onclick="adjustPositions(-1)">−</button>
         <div class="pos-display-wrap">
-          <input type="number" id="positions-input" value="2"
-                 min="2" max="10" onchange="validatePositions()" class="pos-input">
-          <div class="pos-label-sub">positions per signal (min 2: TP1 + TP2 legs)</div>
+          <input type="number" id="positions-input" value="1"
+                 min="1" max="10" onchange="validatePositions()" class="pos-input">
+          <div class="pos-label-sub">max open trades</div>
         </div>
         <button class="pos-btn" onclick="adjustPositions(1)">+</button>
       </div>
@@ -179,7 +179,9 @@
     <!-- Chart -->
     <div class="chart-section">
       <div id="chart-container" class="chart-container">
-        <div class="chart-placeholder">
+        <div class="chart-pane" id="chart-M1"></div>
+        <div class="chart-pane" id="chart-M5"></div>
+        <div class="chart-placeholder" id="chart-placeholder">
           <div class="placeholder-icon">📊</div>
           <div>Select a pair and tap Start Bot to load live charts</div>
         </div>

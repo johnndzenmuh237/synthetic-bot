@@ -77,7 +77,6 @@ def init_db():
         "target_price": "REAL DEFAULT 0",    # this leg's TP price
         "r_distance":   "REAL DEFAULT 0",    # 1R in price units, for the 3R hard cap
         "sl_moved_be":  "INTEGER DEFAULT 0", # 1 once SL has been moved to breakeven
-        "buy_price":    "REAL DEFAULT 0",    # Deriv's real buy_price — exact amount paid to open
     }
     for col, coltype in migrations.items():
         if col not in existing_cols:
@@ -117,28 +116,14 @@ def get_user_by_id(user_id):
 
 # ── Candles ──────────────────────────────────────────────────
 def save_candle(symbol, tf, epoch, o, h, l, c):
-    """A transient 'database is locked' error here previously propagated
-    all the way up and crashed the entire history-load / bot session.
-    Retry briefly, then give up on just this one row rather than taking
-    the whole bot down over one write."""
-    import time as _time
-    for attempt in range(3):
-        con = _conn()
-        try:
-            con.execute(
-                "INSERT OR IGNORE INTO candles (symbol,tf,epoch,open,high,low,close) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (symbol, tf, epoch, o, h, l, c))
-            con.commit()
-            return
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e).lower() and attempt < 2:
-                _time.sleep(0.05 * (attempt + 1))
-                continue
-            log.error("save_candle failed for %s %s epoch=%s: %s", symbol, tf, epoch, e)
-            return
-        finally:
-            con.close()
+    con = _conn()
+    try:
+        con.execute(
+            "INSERT OR IGNORE INTO candles (symbol,tf,epoch,open,high,low,close) VALUES (?,?,?,?,?,?,?)",
+            (symbol, tf, epoch, o, h, l, c))
+        con.commit()
+    finally:
+        con.close()
 
 
 def save_signal(symbol, tf, direction, ema21, ema50, ema100, close):
@@ -188,18 +173,18 @@ def get_all_bot_states():
 # ── Trades ───────────────────────────────────────────────────
 def open_trade(user_id, symbol, direction, lot_size, stake,
                entry, sl, tp, contract_id="", mode="demo", position_num=1,
-               trade_group="", target_price=0, r_distance=0, buy_price=0):
+               trade_group="", target_price=0, r_distance=0):
     con = _conn()
     cur = con.cursor()
     cur.execute(
         """INSERT INTO trades
            (user_id,symbol,direction,lot_size,stake,entry_price,
             stop_loss,take_profit,contract_id,mode,position_num,
-            trade_group,target_price,r_distance,buy_price)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            trade_group,target_price,r_distance)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (user_id, symbol, direction, lot_size, stake,
          entry, sl, tp, contract_id, mode, position_num,
-         trade_group, target_price, r_distance, buy_price))
+         trade_group, target_price, r_distance))
     tid = cur.lastrowid
     con.commit()
     con.close()

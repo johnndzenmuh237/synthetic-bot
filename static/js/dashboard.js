@@ -4,7 +4,7 @@
 var state = {
   symbol: "R_50", mode: "demo",
   botRunning: false, activeTf: "M1",
-  lotSize: 1.00, maxPositions: 2,
+  lotSize: 1.00, maxPositions: 1,
   charts: {}, candles: {}
 };
 
@@ -35,7 +35,12 @@ function closeSidebar() {
 // ── SocketIO ─────────────────────────────────────────────────
 var socket = io();
 
-socket.on("connect", function() { console.log("WS connected"); });
+socket.on("connect", function() {
+  console.log("WS connected");
+  socket.emit("request_snapshot");   // ask server to (re)send charts/status/trades
+});
+
+socket.on("trade_error", function(d) { showError(d.message); });
 
 socket.on("bot_status", function(d) {
   updateStatus(d.state, d.message);
@@ -56,10 +61,12 @@ socket.on("balance_update", function(d) {
 });
 
 socket.on("candles_init", function(d) {
-  if (d.symbol !== state.symbol) return;
+  // The server only sends candles for the symbol the bot is actually running,
+  // so adopt it instead of dropping data when the page default differs.
+  if (d.symbol !== state.symbol) setSymbolUI(d.symbol);
   state.candles[d.tf] = d.candles;
   initChart(d.tf, d.candles);
-  if (d.tf === state.activeTf) showChart(d.tf);
+  showChart(state.activeTf);
 });
 
 socket.on("candle_update", function(d) {
@@ -124,15 +131,15 @@ function updateLotDisplay() {
 
 // ── Max Positions ────────────────────────────────────────────
 function adjustPositions(delta) {
-  var cur  = parseInt(document.getElementById("positions-input").value) || 2;
-  var next = Math.max(2, Math.min(10, cur + delta));
+  var cur  = parseInt(document.getElementById("positions-input").value) || 1;
+  var next = Math.max(1, Math.min(10, cur + delta));
   document.getElementById("positions-input").value = next;
   state.maxPositions = next;
   updateTotalRisk();
 }
 
 function setPositions(val) {
-  val = Math.max(2, Math.min(10, parseInt(val)));
+  val = Math.max(1, Math.min(10, parseInt(val)));
   document.getElementById("positions-input").value = val;
   state.maxPositions = val;
   updateTotalRisk();
@@ -143,7 +150,7 @@ function setPositions(val) {
 
 function validatePositions() {
   var val = parseInt(document.getElementById("positions-input").value);
-  if (isNaN(val) || val < 2) val = 2;
+  if (isNaN(val) || val < 1) val = 1;
   if (val > 10) val = 10;
   document.getElementById("positions-input").value = val;
   state.maxPositions = val;
@@ -152,7 +159,7 @@ function validatePositions() {
 
 function updateTotalRisk() {
   var lot   = state.lotSize || 1;
-  var pos   = state.maxPositions || 2;
+  var pos   = state.maxPositions || 1;
   var total = Math.round(lot * pos * 100) / 100;
   document.getElementById("total-risk-label").textContent =
     "Total per signal: $" + lot.toFixed(2) + " × " + pos + " = $" + total.toFixed(2);
@@ -174,15 +181,21 @@ function updateSettings() {
 }
 
 // ── Charts ───────────────────────────────────────────────────
+// One pane per timeframe (M1 / M5) inside #chart-container. Only the active
+// pane is visible. Lines drawn: EMA10 (red) and EMA20 (purple) = the strategy EMAs.
+var EMA_FAST = 10, EMA_SLOW = 20;
+
 function initChart(tf, candles) {
-  var container = document.getElementById("chart-container");
-  var ph = container.querySelector(".chart-placeholder");
+  var pane = document.getElementById("chart-" + tf);
+  if (!pane) return;
+  var ph = document.getElementById("chart-placeholder");
   if (ph) ph.style.display = "none";
 
   if (!state.charts[tf]) {
-    var chart = LightweightCharts.createChart(container, {
-      width:  container.clientWidth,
-      height: container.clientHeight,
+    var box = document.getElementById("chart-container");
+    var chart = LightweightCharts.createChart(pane, {
+      width:  box.clientWidth || 600,
+      height: box.clientHeight || 300,
       layout: { background: { color: "#111827" }, textColor: "#94a3b8" },
       grid:   { vertLines: { color: "#1e293b" }, horzLines: { color: "#1e293b" } },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -191,29 +204,26 @@ function initChart(tf, candles) {
       handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true },
       handleScale:  { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
     });
-
-    var cs   = chart.addCandlestickSeries({
+    var cs = chart.addCandlestickSeries({
       upColor: "#10b981", downColor: "#ef4444",
       borderUpColor: "#10b981", borderDownColor: "#ef4444",
       wickUpColor: "#10b981", wickDownColor: "#ef4444",
     });
-    var e21  = chart.addLineSeries({ color: "#ef4444", lineWidth: 1, title: "EMA21" });
-    var e50  = chart.addLineSeries({ color: "#a855f7", lineWidth: 1, title: "EMA50" });
-    var e100 = chart.addLineSeries({ color: "#10b981", lineWidth: 2, title: "EMA100" });
+    var eFast = chart.addLineSeries({ color: "#ef4444", lineWidth: 1, title: "EMA" + EMA_FAST });
+    var eSlow = chart.addLineSeries({ color: "#a855f7", lineWidth: 1, title: "EMA" + EMA_SLOW });
+    state.charts[tf] = { chart: chart, cs: cs, eFast: eFast, eSlow: eSlow };
 
-    state.charts[tf] = { chart: chart, cs: cs, e21: e21, e50: e50, e100: e100 };
-
-    var resizeObserver = new ResizeObserver(function() {
-      if (state.charts[tf]) {
-        state.charts[tf].chart.applyOptions({
-          width:  container.clientWidth,
-          height: container.clientHeight,
-        });
-      }
-    });
-    resizeObserver.observe(container);
+    new ResizeObserver(function() { sizeChart(tf); })
+      .observe(document.getElementById("chart-container"));
   }
   populateChart(tf, candles);
+}
+
+function sizeChart(tf) {
+  var c = state.charts[tf];
+  var box = document.getElementById("chart-container");
+  if (c && box.clientWidth > 0)
+    c.chart.applyOptions({ width: box.clientWidth, height: box.clientHeight });
 }
 
 function populateChart(tf, candles) {
@@ -222,9 +232,8 @@ function populateChart(tf, candles) {
   c.cs.setData(candles.map(function(x) {
     return { time: x.epoch, open: +x.open, high: +x.high, low: +x.low, close: +x.close };
   }));
-  c.e21.setData(computeEma(candles, 21));
-  c.e50.setData(computeEma(candles, 50));
-  c.e100.setData(computeEma(candles, 100));
+  c.eFast.setData(computeEma(candles, EMA_FAST));
+  c.eSlow.setData(computeEma(candles, EMA_SLOW));
 }
 
 function updateCandle(tf, candle) {
@@ -236,10 +245,9 @@ function updateCandle(tf, candle) {
   if (store.length && store[store.length-1].epoch === candle.epoch)
     store[store.length-1] = candle;
   else { store.push(candle); state.candles[tf] = store; }
-  var e21 = computeEma(store, 21), e50 = computeEma(store, 50), e100 = computeEma(store, 100);
-  if (e21.length)  c.e21.update(e21[e21.length-1]);
-  if (e50.length)  c.e50.update(e50[e50.length-1]);
-  if (e100.length) c.e100.update(e100[e100.length-1]);
+  var f = computeEma(store, EMA_FAST), sl = computeEma(store, EMA_SLOW);
+  if (f.length)  c.eFast.update(f[f.length-1]);
+  if (sl.length) c.eSlow.update(sl[sl.length-1]);
 }
 
 function computeEma(candles, period) {
@@ -253,11 +261,14 @@ function computeEma(candles, period) {
 }
 
 function showChart(tf) {
-  if (!state.charts[tf]) return;
-  var container = document.getElementById("chart-container");
-  state.charts[tf].chart.applyOptions({
-    width: container.clientWidth, height: container.clientHeight
+  ["M1", "M5"].forEach(function(t) {
+    var pane = document.getElementById("chart-" + t);
+    if (pane) pane.classList.toggle("active", t === tf);
   });
+  if (state.charts[tf]) {
+    sizeChart(tf);
+    state.charts[tf].chart.timeScale().fitContent();
+  }
 }
 
 function switchChart(tf) {
@@ -265,8 +276,32 @@ function switchChart(tf) {
   document.querySelectorAll(".tf-tab").forEach(function(b) {
     b.classList.toggle("active", b.textContent === tf);
   });
-  if (state.charts[tf]) showChart(tf);
-  else showToast(tf + " chart loading...");
+  showChart(tf);
+  if (!state.charts[tf]) showToast(tf + " chart loading...");
+}
+
+function resetCharts() {
+  Object.keys(state.charts).forEach(function(tf) {
+    try { state.charts[tf].chart.remove(); } catch (e) {}
+  });
+  state.charts = {}; state.candles = {};
+  ["M1", "M5"].forEach(function(t) {
+    var pane = document.getElementById("chart-" + t);
+    if (pane) pane.innerHTML = "";
+  });
+  var ph = document.getElementById("chart-placeholder");
+  if (ph) ph.style.display = "flex";
+}
+
+// Keep sidebar/top-bar labels in sync with a symbol
+function setSymbolUI(sym) {
+  if (state.symbol !== sym) resetCharts();
+  state.symbol = sym;
+  document.getElementById("active-symbol-label").textContent = sym;
+  document.getElementById("active-name-label").textContent   = SYMBOL_NAMES[sym] || sym;
+  document.querySelectorAll(".pair-btn").forEach(function(b) {
+    b.classList.toggle("active", b.getAttribute("data-symbol") === sym);
+  });
 }
 
 // ── Analysis ─────────────────────────────────────────────────
@@ -384,10 +419,7 @@ function selectPair(sym, btn) {
   btn.classList.add("active");
   document.getElementById("active-symbol-label").textContent = sym;
   document.getElementById("active-name-label").textContent   = SYMBOL_NAMES[sym] || sym;
-  state.charts = {}; state.candles = {};
-  document.getElementById("chart-container").innerHTML =
-    '<div class="chart-placeholder"><div class="placeholder-icon">📊</div>' +
-    '<div>Tap Start Bot to load live chart</div></div>';
+  resetCharts();
 }
 
 function setMode(mode) {
@@ -410,7 +442,7 @@ function toggleBot() {
     });
   } else {
     state.lotSize      = parseFloat(document.getElementById("lot-input").value) || 1.0;
-    state.maxPositions = parseInt(document.getElementById("positions-input").value) || 2;
+    state.maxPositions = parseInt(document.getElementById("positions-input").value) || 1;
     dismissError();
     showToast("Starting on " + state.symbol + " (" + state.mode.toUpperCase() + ")...");
     closeSidebar();
@@ -431,6 +463,16 @@ function toggleBot() {
 }
 
 // ── Init ─────────────────────────────────────────────────────
+// Sync state with the pair button the page highlights by default
+(function() {
+  var b = document.querySelector(".pair-btn.active");
+  if (b) {
+    state.symbol = b.getAttribute("data-symbol");
+    document.getElementById("active-symbol-label").textContent = state.symbol;
+    document.getElementById("active-name-label").textContent   = SYMBOL_NAMES[state.symbol] || state.symbol;
+  }
+})();
+
 fetch("/api/trades").then(function(r) { return r.json(); }).then(function(d) {
   renderTrades(d.trades); renderStats(d.stats);
 });
@@ -441,7 +483,7 @@ fetch("/api/bot/status").then(function(r) { return r.json(); }).then(function(d)
     state.symbol       = d.symbol;
     state.mode         = d.mode;
     state.lotSize      = d.lot_size      || 1.0;
-    state.maxPositions = d.max_positions || 2;
+    state.maxPositions = d.max_positions || 1;
     setMode(d.mode);
     document.getElementById("lot-input").value       = state.lotSize.toFixed(2);
     document.getElementById("positions-input").value = state.maxPositions;

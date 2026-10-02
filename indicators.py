@@ -159,54 +159,24 @@ def m5_trend(df):
     """Returns 'BUY', 'SELL', or 'NONE' per the ClaudeFX M5 trend rules:
     EMA10/EMA20 stack + close beyond EMA20 + EMA20 sloping + HH/HL (or LH/LL)
     structure. 'If any condition fails: NO TRADE'."""
-    direction, _ = m5_trend_debug(df)
-    return direction
-
-
-def m5_trend_debug(df):
-    """Same logic as m5_trend, but also returns a short string explaining
-    exactly which condition blocked a signal — used for diagnostic logging
-    so 'why didn't it trade' is answerable instead of a silent black box."""
     min_len = EMA_TREND_SLOW + SWING_ORDER * 2 + SWING_STRUCTURE_LOOKBACK + 2
     if len(df) < min_len:
-        return "NONE", "not enough M5 candles yet ({}/{})".format(len(df), min_len)
+        return "NONE"
     if whipsaw_crossovers(df) > CROSSOVER_WHIPSAW_MAX:
-        return "NONE", "too much EMA10/20 chop ({} crossovers)".format(whipsaw_crossovers(df))
+        return "NONE"
     if is_flat_ema(df):
-        return "NONE", "EMA20 is flat (ranging market)"
+        return "NONE"
     if not adx_ok(df):
-        return "NONE", "ADX filter failed (weak trend strength)"
+        return "NONE"
 
     last = df.iloc[-1]
-    ema_stack_up   = last["ema_fast"] > last["ema_slow"]
-    ema_stack_down = last["ema_fast"] < last["ema_slow"]
-    close_above    = last["close"] > last["ema_slow"]
-    close_below    = last["close"] < last["ema_slow"]
-    slope_up       = ema_slope_up(df)
-    slope_down     = ema_slope_down(df)
-    struct_bull    = structure_is_bullish(df)
-    struct_bear    = structure_is_bearish(df)
-
-    if ema_stack_up and close_above and slope_up and struct_bull:
-        return "BUY", "all M5 BUY conditions met"
-    if ema_stack_down and close_below and slope_down and struct_bear:
-        return "SELL", "all M5 SELL conditions met"
-
-    # Nothing matched — report which side was closer and what failed, so
-    # logs show something actionable instead of just "NONE".
-    if ema_stack_up:
-        missing = []
-        if not close_above: missing.append("close not above EMA20")
-        if not slope_up: missing.append("EMA20 not sloping up")
-        if not struct_bull: missing.append("no confirmed HH/HL structure")
-        return "NONE", "leaning BUY but: " + ", ".join(missing)
-    if ema_stack_down:
-        missing = []
-        if not close_below: missing.append("close not below EMA20")
-        if not slope_down: missing.append("EMA20 not sloping down")
-        if not struct_bear: missing.append("no confirmed LH/LL structure")
-        return "NONE", "leaning SELL but: " + ", ".join(missing)
-    return "NONE", "EMA10/EMA20 not clearly stacked either way"
+    if (last["ema_fast"] > last["ema_slow"] and last["close"] > last["ema_slow"]
+            and ema_slope_up(df) and structure_is_bullish(df)):
+        return "BUY"
+    if (last["ema_fast"] < last["ema_slow"] and last["close"] < last["ema_slow"]
+            and ema_slope_down(df) and structure_is_bearish(df)):
+        return "SELL"
+    return "NONE"
 
 
 def market_direction(df):

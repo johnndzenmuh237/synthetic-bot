@@ -31,6 +31,7 @@ class DerivBroker:
         self._subscriptions = set()   # {(symbol, tf_key), ...} — resubscribed after a reconnect
         self._reconnecting  = False
         self._closing        = False  # True once disconnect() is called, stops auto-reconnect
+        self.last_error      = ""     # human-readable reason of the last failed trade
 
     def _next_id(self):
         self._req_id += 1
@@ -238,12 +239,12 @@ class DerivBroker:
             except Exception:
                 pass
 
-    async def get_candles(self, symbol, tf_key):
+    async def get_candles(self, symbol, tf_key, count=None):
         resp = await self._send({
             "ticks_history": symbol,
             "style":         "candles",
             "granularity":   TIMEFRAMES[tf_key],
-            "count":         CANDLE_COUNT,
+            "count":         count or CANDLE_COUNT,
             "end":           "latest",
         }, timeout=60)
         if "error" in resp:
@@ -251,7 +252,8 @@ class DerivBroker:
                       symbol, tf_key, resp["error"]["message"])
             return []
         candles = resp.get("candles", [])
-        log.info("Fetched %d candles | %s %s", len(candles), symbol, tf_key)
+        if not count:
+            log.info("Fetched %d candles | %s %s", len(candles), symbol, tf_key)
         return candles
 
     async def _subscribe_candles_raw(self, symbol, tf_key):
@@ -289,6 +291,7 @@ class DerivBroker:
         return self.balance
 
     async def place_trade(self, symbol, direction, stake):
+        self.last_error = ""
         ctype = "CALL" if direction == "BUY" else "PUT"
 
         # Get proposal
@@ -304,10 +307,12 @@ class DerivBroker:
                 "duration_unit": DURATION_UNIT,
             }, timeout=15)
         except Exception as e:
+            self.last_error = "Proposal failed: {}".format(e)
             log.error("Proposal error: %s", e)
             return {}
 
         if "error" in prop:
+            self.last_error = "Proposal rejected: {}".format(prop["error"]["message"])
             log.error("Proposal rejected [%s %s $%.2f]: %s",
                       direction, symbol, stake, prop["error"]["message"])
             return {}
@@ -319,10 +324,12 @@ class DerivBroker:
                 "price": stake,
             }, timeout=15)
         except Exception as e:
+            self.last_error = "Buy failed: {}".format(e)
             log.error("Buy error: %s", e)
             return {}
 
         if "error" in buy:
+            self.last_error = "Buy rejected: {}".format(buy["error"]["message"])
             log.error("Buy rejected: %s", buy["error"]["message"])
             return {}
 
@@ -342,3 +349,15 @@ class DerivBroker:
             return {}
         log.info("🔒 TRADE CLOSED | Contract=%s", contract_id)
         return resp.get("sell", {})
+
+    async def get_contract(self, contract_id):
+        """Status of a contract: is_sold, profit, status ('won'/'lost'/'open'), sell_spot..."""
+        try:
+            resp = await self._send({
+                "proposal_open_contract": 1,
+                "contract_id": int(contract_id),
+            }, timeout=15)
+        except Exception as e:
+            log.error("get_contract error [%s]: %s", contract_id, e)
+            return {}
+        return resp.get("proposal_open_contract", {}) or {}

@@ -96,7 +96,7 @@ STOP_LOSS_POINTS_DEFAULT = 300   # any symbol not listed above
 
 # ── Position sizing / risk ───────────────────────────────────
 RISK_PER_TRADE_PCT     = 1.0    # % of balance risked per trade
-MAX_CONSECUTIVE_LOSSES = 2      # stop trading for the day after this many losses in a row
+MAX_CONSECUTIVE_LOSSES = 5      # stop trading for the day after this many losses in a row
 
 # ── Take profit — R multiples (R = initial stop-loss distance) ──
 TP1_R          = 1.5
@@ -130,6 +130,20 @@ LOT_MIN    = 0.01
 LOT_MAX    = 100.0
 # 1 lot = $1 stake on Deriv synthetics
 LOT_TO_USD = 1.0
+
+# ── Strategy selection (SIMPLIFIED) ──────────────────────────
+# "EMA_CROSS" = one rule only: EMA10 crosses EMA20 on a CLOSED M1 candle.
+#   BUY (CALL) when EMA10 crosses above EMA20, SELL (PUT) when it crosses below.
+# USE_M5_FILTER: only take the cross if the M5 EMA10/EMA20 agree with it.
+#   Set to False if you want the maximum number of trades.
+STRATEGY_MODE = "EMA_CROSS"
+USE_M5_FILTER = True
+
+# False = demo mode places REAL contracts on your Deriv DEMO account
+#         (they show up in Deriv back office, virtual money).
+# True  = old behaviour: demo trades are only simulated inside the bot.
+SIMULATE_DEMO = False
+SIM_PAYOUT    = 0.95   # only used when SIMULATE_DEMO=True
 
 # ── Contract ─────────────────────────────────────────────────
 DURATION      = 15

@@ -1,27 +1,23 @@
 """
-strategy.py — ClaudeFX Trend Following v2.0
+strategy.py — SIMPLIFIED single strategy: EMA10 / EMA20 crossover
 
-M5 = trend timeframe (EMA10/EMA20 + HH/HL or LH/LL structure)
-M1 = entry timeframe  (Setup A: EMA10 pullback)
+Runs once per CLOSED M1 candle:
+  BUY  (CALL): EMA10 crosses above EMA20 on the last closed M1 candle
+  SELL (PUT) : EMA10 crosses below EMA20 on the last closed M1 candle
+Optional M5 filter (config.USE_M5_FILTER): the M5 EMA10/EMA20 must point
+the same way as the M1 cross.
 
-Only Setup A (EMA Pullback) is implemented — see config.ENTRY_SETUP.
-Setup B (Breakout Retest) needs a separate support/resistance engine
-and is reserved for a future update.
+The old multi-condition ClaudeFX pullback/structure logic is still in
+indicators.py (unused) — it required ~7 conditions to line up at once,
+which almost never happens on synthetic indices.
 """
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from indicators import (
-    compute_emas, m5_trend, m5_trend_debug, pullback_entry, exit_signal,
-    candles_since_spike,
-)
+from indicators import compute_emas
 from config import (
-    EMA_TREND_FAST, EMA_TREND_SLOW, EMA_ENTRY,
-    STOP_LOSS_POINTS, STOP_LOSS_POINTS_DEFAULT,
-    USE_ATR_SL, ATR_SL_MULTIPLIER, ATR_PERIOD,
-    TP1_R, TP1_CLOSE_PCT, TP2_R, TP_MAX_R,
-    BOOM_CRASH_SYMBOLS, SPIKE_WAIT_MIN_CANDLES, SPIKE_WAIT_MAX_CANDLES,
+    EMA_TREND_FAST, EMA_TREND_SLOW, USE_M5_FILTER,
     DAILY_RESET_START_UTC, DAILY_RESET_END_UTC,
 )
 from logger import log
@@ -29,118 +25,62 @@ from logger import log
 
 @dataclass
 class Signal:
-    direction:      str
-    symbol:         str
-    close_price:    float
-    ema_fast:       float
-    ema_slow:       float
-    stop_loss:      float
-    r_distance:     float   # |entry - stop_loss|, i.e. 1R in price units
-    tp1_price:      float
-    tp2_price:      float
-    tp1_close_pct:  int
-    reason:         str
+    direction:   str
+    symbol:      str
+    close_price: float
+    ema_fast:    float
+    ema_slow:    float
+    reason:      str
 
 
 def _in_daily_reset_window(now=None):
-    """Skip trading during the 23:55-00:05 GMT daily reset window."""
     now = now or datetime.now(timezone.utc)
     hm = now.strftime("%H:%M")
     return hm >= DAILY_RESET_START_UTC or hm <= DAILY_RESET_END_UTC
 
 
-def _stop_loss_distance(symbol, m5_df):
-    if USE_ATR_SL:
-        if len(m5_df) < ATR_PERIOD + 2:
-            return None
-        from indicators import compute_atr
-        atr = float(compute_atr(m5_df, ATR_PERIOD)["atr"].iloc[-1])
-        return atr * ATR_SL_MULTIPLIER if atr > 0 else None
-    return STOP_LOSS_POINTS.get(symbol, STOP_LOSS_POINTS_DEFAULT)
+def ema_direction(df) -> str:
+    """'BUY' if EMA10 > EMA20, 'SELL' if below, else 'NONE'. df needs ema_fast/ema_slow."""
+    last = df.iloc[-1]
+    if last["ema_fast"] > last["ema_slow"]:
+        return "BUY"
+    if last["ema_fast"] < last["ema_slow"]:
+        return "SELL"
+    return "NONE"
 
 
-def _boom_crash_ok(symbol, m5_df):
-    """Boom/Crash rule: trade only after a spike, never immediately after —
-    wait 5-10 candles for a base to form, then normal trend rules apply."""
-    if symbol not in BOOM_CRASH_SYMBOLS:
-        return True
-    since = candles_since_spike(m5_df)
-    if since is None:
-        return False  # no recent spike to base off of — no trade
-    return SPIKE_WAIT_MIN_CANDLES <= since <= SPIKE_WAIT_MAX_CANDLES
-
-
-def evaluate(m5_df, m1_df, symbol):
-    """Run the full ClaudeFX v2.0 decision chain. Returns a Signal or None.
-    Logs a one-line diagnostic on every call — not just when a signal
-    fires — so 'why hasn't it traded' is answerable from the logs instead
-    of being a silent black box."""
+def evaluate(m5_df, m1_df, symbol) -> Optional[Signal]:
+    """m1_df / m5_df must contain CLOSED candles only (last row = last closed candle)."""
     if _in_daily_reset_window():
-        log.info("EVAL %s | skipped: inside daily reset window", symbol)
+        return None
+    if m1_df is None or len(m1_df) < EMA_TREND_SLOW + 3:
         return None
 
-    m5 = compute_emas(m5_df, fast=EMA_TREND_FAST, slow=EMA_TREND_SLOW)
-    m1 = compute_emas(m1_df, fast=EMA_ENTRY, slow=EMA_ENTRY)
+    m1 = compute_emas(m1_df, fast=EMA_TREND_FAST, slow=EMA_TREND_SLOW)
+    prev, last = m1.iloc[-2], m1.iloc[-1]
 
-    direction, trend_reason = m5_trend_debug(m5)
-    if direction == "NONE":
-        log.info("EVAL %s | M5 trend: NONE (%s)", symbol, trend_reason)
+    crossed_up   = prev["ema_fast"] <= prev["ema_slow"] and last["ema_fast"] > last["ema_slow"]
+    crossed_down = prev["ema_fast"] >= prev["ema_slow"] and last["ema_fast"] < last["ema_slow"]
+    if not (crossed_up or crossed_down):
         return None
 
-    if not _boom_crash_ok(symbol, m5):
-        log.info("EVAL %s | M5 trend=%s but blocked: Boom/Crash spike-wait "
-                 "filter not satisfied", symbol, direction)
-        return None
+    direction = "BUY" if crossed_up else "SELL"
 
-    if not pullback_entry(m1, direction):
-        log.info("EVAL %s | M5 trend=%s (%s) but no M1 EMA10 pullback "
-                 "confirmation yet — waiting for entry setup",
-                 symbol, direction, trend_reason)
-        return None
+    if USE_M5_FILTER:
+        if m5_df is None or len(m5_df) < EMA_TREND_SLOW + 3:
+            log.warning("M5 filter ON but M5 data not ready — taking the M1 cross without it")
+        else:
+            m5 = compute_emas(m5_df, fast=EMA_TREND_FAST, slow=EMA_TREND_SLOW)
+            m5_dir = ema_direction(m5)
+            if m5_dir != direction:
+                log.info("M1 %s cross SKIPPED — M5 trend is %s", direction, m5_dir)
+                return None
 
-    last  = m1.iloc[-1]
     close = float(last["close"])
-
-    sl_distance = _stop_loss_distance(symbol, m5)
-    if not sl_distance or sl_distance <= 0:
-        log.info("EVAL %s | M5 trend=%s + M1 pullback confirmed, but "
-                 "stop-loss distance is invalid (%s) — check STOP_LOSS_POINTS "
-                 "for this symbol in config.py", symbol, direction, sl_distance)
-        return None
-
-    if direction == "BUY":
-        stop_loss = close - sl_distance
-        tp1 = close + TP1_R * sl_distance
-        tp2 = close + TP2_R * sl_distance
-        reason = "M5 EMA10>EMA20 + HH/HL structure | M1 EMA10 pullback confirmed"
-    else:
-        stop_loss = close + sl_distance
-        tp1 = close - TP1_R * sl_distance
-        tp2 = close - TP2_R * sl_distance
-        reason = "M5 EMA10<EMA20 + LH/LL structure | M1 EMA10 pullback confirmed"
-
-    log.info("SIGNAL %s | %s | Close=%.5f SL=%.5f TP1=%.5f TP2=%.5f (R=%.5f)",
-              direction, symbol, close, stop_loss, tp1, tp2, sl_distance)
-
-    return Signal(
-        direction=direction, symbol=symbol, close_price=close,
-        ema_fast=float(last["ema_fast"]), ema_slow=float(m5.iloc[-1]["ema_slow"]),
-        stop_loss=stop_loss, r_distance=sl_distance,
-        tp1_price=tp1, tp2_price=tp2, tp1_close_pct=TP1_CLOSE_PCT,
-        reason=reason,
-    )
-
-
-def should_exit(m5_df, direction):
-    """M5 trend-reversal exit condition (per '9. Exit Rules')."""
-    m5 = compute_emas(m5_df, fast=EMA_TREND_FAST, slow=EMA_TREND_SLOW)
-    if exit_signal(m5, direction):
-        return True, "M5 EMA10/20 reverse cross, close beyond EMA20, or structure flipped"
-    return False, ""
-
-
-def max_r_price(direction, entry_price, r_distance):
-    """3R hard cap price ('do not aim beyond 3R')."""
-    if direction == "BUY":
-        return entry_price + TP_MAX_R * r_distance
-    return entry_price - TP_MAX_R * r_distance
+    word = "above" if crossed_up else "below"
+    reason = "M1 EMA{} crossed {} EMA{}{}".format(
+        EMA_TREND_FAST, word, EMA_TREND_SLOW,
+        " | M5 trend agrees" if USE_M5_FILTER else "")
+    log.info("SIGNAL %s | %s | Close=%.5f | %s", direction, symbol, close, reason)
+    return Signal(direction, symbol, close,
+                  float(last["ema_fast"]), float(last["ema_slow"]), reason)

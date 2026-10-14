@@ -1,0 +1,1328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SyntheticBot — Rules-Based Auto-Trading Bot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --color-bg:#0B0D12;
+    --color-panel:#12151C;
+    --color-panel-2:#171B24;
+    --color-line: rgba(255,255,255,0.08);
+    --color-text-primary:#ECEFF3;
+    --color-text-secondary:#B7BEC9;
+    --color-text-muted:#7A8394;
+    --color-gold:#C9A84C;
+    --color-gold-soft: rgba(201,168,76,0.12);
+    --color-gold-glow: rgba(201,168,76,0.22);
+    --color-success:#22C55E;
+    --color-danger:#EF4444;
+    --radius-lg:10px;
+    --radius-xl:16px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:var(--color-bg);
+    color:var(--color-text-primary);
+    font-family:'Inter', sans-serif;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3{font-family:'Syne', sans-serif; font-weight:700; letter-spacing:-0.01em;}
+  .mono{font-family:'JetBrains Mono', monospace;}
+  a{color:inherit; text-decoration:none;}
+  .wrap{max-width:1120px; margin:0 auto; padding:0 28px;}
+
+  /* Reusable bot icon badge -------------------------------------------- */
+  .bot-icon{display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;}
+  .bot-icon svg{display:block;}
+
+  /* NAV */
+  nav{
+    position:sticky; top:0; z-index:50;
+    background:rgba(11,13,18,0.85);
+    backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--color-line);
+  }
+  nav .wrap{display:flex; align-items:center; justify-content:space-between; height:68px;}
+  .brand{display:flex; align-items:center; gap:10px; font-family:'Syne'; font-weight:700; font-size:18px;}
+  .brand .bot-icon{width:26px; height:26px;}
+  .nav-cta{
+    background:var(--color-gold); color:#1A1404; font-weight:700; font-size:14px;
+    padding:9px 18px; border-radius:var(--radius-lg); font-family:'Syne';
+    transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .nav-cta:hover{transform:translateY(-1px); box-shadow:0 6px 20px var(--color-gold-glow);}
+
+  /* HERO */
+  header.hero{padding:88px 0 72px; border-bottom:1px solid var(--color-line); position:relative; overflow:hidden;}
+  .eyebrow{
+    display:inline-flex; align-items:center; gap:8px;
+    font-family:'JetBrains Mono'; font-size:12px; letter-spacing:0.06em;
+    color:var(--color-gold); background:var(--color-gold-soft);
+    border:1px solid rgba(201,168,76,0.3); padding:6px 12px; border-radius:20px;
+    margin-bottom:22px;
+  }
+  .eyebrow .pulse{width:6px; height:6px; border-radius:50%; background:var(--color-gold); animation:pulse 1.8s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;} 50%{opacity:.3;}}
+
+  .hero-grid{display:grid; grid-template-columns:1.1fr 0.9fr; gap:56px; align-items:center;}
+  .hero-heading{display:flex; align-items:flex-start; gap:18px; margin-bottom:20px;}
+  .hero-heading .bot-icon{width:56px; height:56px; margin-top:4px;}
+  .hero h1{font-size:46px; line-height:1.08;}
+  .hero h1 span{color:var(--color-gold);}
+  .hero p.lead{font-size:17px; color:var(--color-text-muted); max-width:480px; margin-bottom:32px;}
+  .hero-actions{display:flex; align-items:center; gap:18px; flex-wrap:wrap;}
+  .btn-primary{
+    background:var(--color-gold); color:#1A1404; font-family:'Syne'; font-weight:700; font-size:15px;
+    padding:14px 26px; border-radius:var(--radius-lg); display:inline-flex; align-items:center; gap:8px;
+    transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .btn-primary:hover{transform:translateY(-2px); box-shadow:0 10px 30px var(--color-gold-glow);}
+  .btn-secondary{color:var(--color-text-muted); font-size:14px; border-bottom:1px solid var(--color-line); padding-bottom:2px;}
+  .btn-secondary:hover{color:var(--color-text-primary); border-color:var(--color-text-muted);}
+
+  /* Chart visual */
+  .chart-card{
+    background:var(--color-panel); border:1px solid var(--color-line); border-radius:var(--radius-xl); padding:22px;
+  }
+  .chart-card .ch-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;}
+  .ch-head .pair{font-family:'JetBrains Mono'; font-size:13px; color:var(--color-text-muted); display:flex; align-items:center; gap:8px;}
+  .ch-head .pair .bot-icon{width:20px; height:20px;}
+  .ch-head .status{font-family:'JetBrains Mono'; font-size:12px; color:var(--color-success); display:flex; align-items:center; gap:6px;}
+  svg{width:100%; height:auto;}
+  .candle-up{fill:var(--color-success);}
+  .candle-down{fill:var(--color-danger);}
+  .wick{stroke:var(--color-text-muted); stroke-width:1.4;}
+  .sl-line{stroke:var(--color-danger); stroke-width:1.2; stroke-dasharray:4 4;}
+  .entry-line{stroke:var(--color-gold); stroke-width:1.2; stroke-dasharray:4 4;}
+  .marker-label{font-family:'JetBrains Mono'; font-size:9px; fill:var(--color-text-muted);}
+
+  /* badges (matches dashboard badge language) */
+  .badge{display:inline-flex; align-items:center; gap:4px; font-family:'JetBrains Mono'; font-size:10px; text-transform:uppercase; letter-spacing:.05em; padding:4px 9px; border-radius:999px;}
+  .badge-gold{background:var(--color-gold-soft); color:var(--color-gold); border:1px solid rgba(201,168,76,0.3);}
+  .badge-success{background:rgba(34,197,94,0.12); color:var(--color-success); border:1px solid rgba(34,197,94,0.3);}
+
+  /* SECTION: log */
+  section.log{padding:88px 0; border-bottom:1px solid var(--color-line);}
+  .section-head{max-width:560px; margin-bottom:56px;}
+  .section-head .eyebrow{margin-bottom:16px;}
+  .section-head h2{font-size:32px; margin-bottom:14px;}
+  .section-head p{color:var(--color-text-muted); font-size:16px;}
+
+  .log-entry{
+    display:grid; grid-template-columns:52px 1fr; gap:24px;
+    padding:26px 0; border-top:1px solid var(--color-line);
+  }
+  .log-entry:last-child{border-bottom:1px solid var(--color-line);}
+  .log-step{padding-top:2px;}
+  .log-step .bot-icon{
+    width:40px; height:40px; border-radius:var(--radius-lg);
+    background:var(--color-gold-soft); border:1px solid rgba(201,168,76,0.25);
+  }
+  .log-body h3{font-size:19px; margin-bottom:6px; display:flex; align-items:center; gap:10px;}
+  .log-body h3 .tag{
+    font-family:'JetBrains Mono'; font-size:10px; color:var(--color-gold); background:var(--color-gold-soft);
+    border:1px solid rgba(201,168,76,0.25); padding:3px 8px; border-radius:4px; text-transform:uppercase; letter-spacing:.05em;
+  }
+  .log-body p{color:var(--color-text-muted); font-size:15px; max-width:560px;}
+
+  /* SECTION: ticket */
+  section.ticket{padding:88px 0;}
+  .ticket-grid{display:grid; grid-template-columns:1fr 420px; gap:48px; align-items:start;}
+  .ticket-copy h2{font-size:30px; margin-bottom:16px;}
+  .ticket-copy p{color:var(--color-text-muted); font-size:16px; margin-bottom:20px; max-width:460px;}
+  .perk-list{list-style:none; display:flex; flex-direction:column; gap:14px;}
+  .perk-list li{display:flex; align-items:center; gap:10px; font-size:15px; color:var(--color-text-primary);}
+  .perk-list li .bot-icon{width:22px; height:22px;}
+
+  .order-card{
+    background:var(--color-panel); border:1px solid var(--color-line); border-radius:var(--radius-xl); overflow:hidden;
+  }
+  .order-head{
+    background:var(--color-panel-2); padding:18px 22px; border-bottom:1px solid var(--color-line);
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .order-head .mono{font-size:12px; color:var(--color-text-muted);}
+  .order-head .brand-mark{display:flex; align-items:center; gap:8px; font-family:'JetBrains Mono'; font-size:12px; color:var(--color-gold);}
+  .order-head .brand-mark .bot-icon{width:18px; height:18px;}
+  .order-body{padding:22px;}
+  .order-row{display:flex; justify-content:space-between; padding:11px 0; border-bottom:1px dashed var(--color-line); font-size:14px;}
+  .order-row:last-of-type{border-bottom:none;}
+  .order-row .k{color:var(--color-text-muted);}
+  .order-row .v{font-family:'JetBrains Mono';}
+  .order-row .v.up{color:var(--color-gold);}
+  .buy-btn{
+    display:block; width:100%; text-align:center; margin-top:18px;
+    background:var(--color-gold); color:#1A1404; font-family:'Syne'; font-weight:700; font-size:16px;
+    padding:15px; border-radius:var(--radius-lg); transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .buy-btn:hover{transform:translateY(-2px); box-shadow:0 12px 32px var(--color-gold-glow);}
+  .fine{font-size:11px; color:var(--color-text-muted); text-align:center; margin-top:12px;}
+
+  /* FOOTER */
+  footer{border-top:1px solid var(--color-line); padding:36px 0;}
+  footer .wrap{display:flex; justify-content:space-between; align-items:flex-start; gap:24px; flex-wrap:wrap;}
+  footer .disclaimer{font-size:12px; color:var(--color-text-muted); max-width:640px; line-height:1.6;}
+  footer .brand{font-size:14px;}
+  footer .brand .bot-icon{width:20px; height:20px;}
+
+  @media (max-width:860px){
+    .hero-grid{grid-template-columns:1fr;}
+    .hero h1{font-size:34px;}
+    .ticket-grid{grid-template-columns:1fr;}
+    .log-entry{grid-template-columns:40px 1fr;}
+  }
+
+  /* ═════ LIVE TERMINAL ═════ */
+  section.terminal{padding:88px 0; border-bottom:1px solid var(--color-line);}
+  .term-notice{
+    display:flex; gap:.75rem; align-items:flex-start;
+    background:var(--color-gold-soft); border:1px solid rgba(201,168,76,0.3);
+    border-radius:var(--radius-lg); padding:.9rem 1.1rem; margin-bottom:1.5rem;
+    font-size:.82rem; line-height:1.6; color:var(--color-text-secondary);
+  }
+  .term-notice b{color:var(--color-text-primary);}
+  .term-notice .bot-icon{margin-top:2px;}
+  .term-grid{display:grid; grid-template-columns:1fr 330px; gap:1.25rem; align-items:start;}
+  .term-card{background:var(--color-panel); border:1px solid var(--color-line); border-radius:var(--radius-xl); overflow:hidden;}
+  .term-toolbar{display:flex; flex-wrap:wrap; align-items:center; gap:.6rem; padding:.8rem 1rem; border-bottom:1px solid var(--color-line);}
+  .term-select{
+    background:var(--color-panel-2); color:var(--color-text-primary);
+    border:1px solid var(--color-line); border-radius:8px; padding:.4rem .6rem;
+    font-family:'JetBrains Mono', monospace; font-size:12px; cursor:pointer;
+  }
+  .term-status{display:inline-flex; align-items:center; gap:6px; font-family:'JetBrains Mono'; font-size:11px; color:var(--color-text-muted);}
+  .term-status i{width:7px; height:7px; border-radius:50%; background:var(--color-text-muted); display:inline-block;}
+  .term-status.live i{background:var(--color-success); box-shadow:0 0 8px rgba(34,197,94,.6);}
+  .term-status.sim i{background:var(--color-gold); box-shadow:0 0 8px rgba(201,168,76,.6);}
+  .term-price{margin-left:auto; font-family:'JetBrains Mono'; font-weight:700; font-size:1.05rem; transition:color .2s ease;}
+  .term-price.up{color:var(--color-success);}
+  .term-price.down{color:var(--color-danger);}
+  .term-chart-wrap{position:relative; height:430px;}
+  #botChart{position:absolute; top:0; left:0; display:block; cursor:crosshair;}
+  .chart-overlay{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:10px;
+    background:var(--color-panel); color:var(--color-text-muted); font-size:.85rem; z-index:2;
+  }
+  .chart-legend{display:flex; gap:1rem; flex-wrap:wrap; padding:.6rem 1rem; border-top:1px solid var(--color-line); font-family:'JetBrains Mono'; font-size:11px; color:var(--color-text-muted);}
+  .chart-legend span::before{content:""; display:inline-block; width:10px; height:3px; border-radius:2px; margin-right:6px; vertical-align:middle; background:var(--c, #fff);}
+
+  .term-side{display:flex; flex-direction:column; gap:1rem;}
+  .term-side .term-card{padding:1rem 1.1rem;}
+  .term-side h4{font-family:'Syne'; font-size:.8rem; letter-spacing:.06em; text-transform:uppercase; color:var(--color-text-muted); margin-bottom:.8rem; font-weight:600;}
+  .term-botrow{display:flex; align-items:center; justify-content:space-between; gap:1rem;}
+  .term-botrow .nm{font-weight:700; font-size:.92rem;}
+  .term-botrow .sub{font-size:.72rem; color:var(--color-text-muted); margin-top:2px;}
+  .t-toggle{position:relative; width:46px; height:26px; border-radius:999px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.1); cursor:pointer; flex-shrink:0; transition:background .2s ease;}
+  .t-toggle::after{content:''; position:absolute; top:2px; left:2px; width:20px; height:20px; border-radius:50%; background:#9CA3B0; transition:transform .2s ease, background .2s ease;}
+  .t-toggle.on{background:rgba(34,197,94,0.25); border-color:rgba(34,197,94,0.4);}
+  .t-toggle.on::after{transform:translateX(20px); background:var(--color-success);}
+  .t-stats{display:grid; grid-template-columns:1fr 1fr; gap:.6rem;}
+  .t-stat{background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); border-radius:var(--radius-lg); padding:.65rem .7rem;}
+  .t-stat .v{font-family:'JetBrains Mono'; font-weight:700; font-size:1rem;}
+  .t-stat .v.up{color:var(--color-success);} .t-stat .v.down{color:var(--color-danger);}
+  .t-stat .l{font-size:.66rem; text-transform:uppercase; letter-spacing:.05em; color:var(--color-text-muted); margin-top:2px;}
+  .t-open{font-size:.82rem;}
+  .t-open .idle{color:var(--color-text-muted); line-height:1.55;}
+  .t-open-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:.6rem;}
+  .t-open-head b{font-family:'JetBrains Mono';}
+  .t-open .r{display:flex; justify-content:space-between; padding:.3rem 0; border-bottom:1px dashed var(--color-line); font-size:.78rem;}
+  .t-open .r:last-child{border-bottom:none;}
+  .t-open .r .k{color:var(--color-text-muted);}
+  .t-open .r .val{font-family:'JetBrains Mono';}
+  .t-btns{display:flex; gap:.5rem; margin-top:.8rem; flex-wrap:wrap;}
+  .t-btn{
+    flex:1; min-width:0; text-align:center; font-family:'Syne'; font-weight:700; font-size:.78rem;
+    padding:.55rem .6rem; border-radius:var(--radius-lg); cursor:pointer;
+    border:1px solid rgba(201,168,76,0.35); background:var(--color-gold-soft); color:var(--color-gold);
+    transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .t-btn:hover:not(:disabled){transform:translateY(-1px); box-shadow:0 6px 18px var(--color-gold-glow);}
+  .t-btn:disabled{opacity:.4; cursor:not-allowed;}
+  .t-btn.ghost{border-color:var(--color-line); background:transparent; color:var(--color-text-secondary);}
+  .t-note{font-size:.7rem; color:var(--color-text-muted); margin-top:.7rem; line-height:1.5;}
+
+  .term-log{margin-top:1.25rem;}
+  .term-log .term-card{padding:0;}
+  .term-log-head{display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; padding:.9rem 1.1rem; border-bottom:1px solid var(--color-line);}
+  .term-log-head h4{font-family:'Syne'; font-size:.85rem; font-weight:700;}
+  .term-log-head .bt{font-size:.72rem; color:var(--color-text-muted); font-family:'JetBrains Mono';}
+  .term-table-wrap{overflow-x:auto;}
+  table.term-table{width:100%; border-collapse:collapse; font-size:.78rem; min-width:640px;}
+  .term-table th{font-family:'JetBrains Mono'; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-text-muted); text-align:left; padding:.6rem 1.1rem; border-bottom:1px solid var(--color-line); font-weight:500;}
+  .term-table td{padding:.6rem 1.1rem; border-bottom:1px solid rgba(255,255,255,0.04); font-family:'JetBrains Mono'; white-space:nowrap;}
+  .term-table td.pos{color:var(--color-success); font-weight:700;}
+  .term-table td.neg{color:var(--color-danger); font-weight:700;}
+  .term-table td.empty{text-align:center; color:var(--color-text-muted); padding:1.6rem; font-family:'Inter';}
+  .src-tag{font-size:9px; padding:2px 7px; border-radius:999px; text-transform:uppercase; letter-spacing:.05em; border:1px solid var(--color-line); color:var(--color-text-muted);}
+  .src-tag.live{border-color:rgba(34,197,94,.35); color:var(--color-success);}
+
+  @media (max-width:980px){
+    .term-grid{grid-template-columns:1fr;}
+    .term-chart-wrap{height:340px;}
+    .term-price{margin-left:0;}
+  }
+
+  .loader-spin{width:18px;height:18px;border-radius:50%;border:2px solid var(--color-line);border-top-color:var(--color-gold);animation:spin .8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* ── Deriv account card ── */
+  .d-head{display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.8rem;}
+  .d-head h4{margin-bottom:0 !important;}
+  .d-badge{font-family:'JetBrains Mono', monospace; font-size:10px; padding:3px 9px; border-radius:999px; border:1px solid var(--color-line); color:var(--color-text-muted); letter-spacing:.04em;}
+  .d-badge.demo{border-color:rgba(201,168,76,.4); color:var(--color-gold); background:var(--color-gold-soft);}
+  .d-badge.real{border-color:rgba(239,68,68,.45); color:var(--color-danger); background:rgba(239,68,68,.1);}
+  .d-in{width:100%; background:var(--color-panel-2); color:var(--color-text-primary); border:1px solid var(--color-line); border-radius:8px; padding:.5rem .6rem; font-family:'JetBrains Mono', monospace; font-size:12px; outline:none;}
+  .d-in:focus{border-color:rgba(201,168,76,.5);}
+  .d-in:disabled{opacity:.5;}
+  .d-row{display:flex; gap:.5rem; margin-top:.6rem;}
+  .d-row label{flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; font-size:.64rem; text-transform:uppercase; letter-spacing:.05em; color:var(--color-text-muted);}
+  .d-real{align-items:flex-start; gap:.5rem; margin-top:.8rem; padding:.6rem .7rem; border:1px solid rgba(239,68,68,.3); background:rgba(239,68,68,.07); border-radius:var(--radius-lg); font-size:.72rem; line-height:1.5; color:var(--color-text-secondary); cursor:pointer;}
+  .d-real input{margin-top:3px; accent-color:var(--color-danger);}
+  .d-msg{font-size:.72rem; margin-top:.7rem; min-height:1.1em; line-height:1.5; color:var(--color-text-muted);}
+  .d-msg.ok{color:var(--color-success);} .d-msg.warn{color:var(--color-gold);} .d-msg.err{color:var(--color-danger);}
+  .src-tag.real{border-color:rgba(239,68,68,.4); color:var(--color-danger);}
+</style>
+</head>
+<body>
+
+<!-- ═════ Reusable inline bot icon (professional monoline mark: robot head reading a live candlestick chart) ═════ -->
+
+<nav>
+  <div class="wrap">
+    <div class="brand">
+      <span class="bot-icon">
+        <svg width="26" height="26" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="1" y="1" width="30" height="30" rx="8" fill="var(--color-gold-soft)" stroke="var(--color-gold)" stroke-width="1.2"/>
+          <circle cx="16" cy="11.5" r="4.6" stroke="var(--color-gold)" stroke-width="1.3"/>
+          <circle cx="14.2" cy="11.3" r="0.9" fill="var(--color-gold)"/>
+          <circle cx="17.8" cy="11.3" r="0.9" fill="var(--color-gold)"/>
+          <line x1="16" y1="6.9" x2="16" y2="5.2" stroke="var(--color-gold)" stroke-width="1.2"/>
+          <circle cx="16" cy="4.6" r="0.9" fill="var(--color-gold)"/>
+          <path d="M9 26 L12 20 L14.5 22.5 L18 16.5 L21 19.5 L23 15.5" stroke="var(--color-gold)" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      SyntheticBot
+    </div>
+    <a href="contact.html" class="nav-cta">Get SyntheticBot</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <div class="eyebrow"><span class="pulse"></span>ACTIVE 24/5 · RULES-BASED ENGINE</div>
+
+      <div class="hero-heading">
+        <span class="bot-icon">
+          <svg width="56" height="56" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2" y="2" width="60" height="60" rx="16" fill="var(--color-gold-soft)" stroke="var(--color-gold)" stroke-width="1.4"/>
+            <rect x="20" y="14" width="24" height="18" rx="6" fill="none" stroke="var(--color-gold)" stroke-width="1.6"/>
+            <circle cx="26.5" cy="22.5" r="1.8" fill="var(--color-gold)"/>
+            <circle cx="37.5" cy="22.5" r="1.8" fill="var(--color-gold)"/>
+            <line x1="32" y1="14" x2="32" y2="9" stroke="var(--color-gold)" stroke-width="1.6"/>
+            <circle cx="32" cy="7.5" r="1.6" fill="var(--color-gold)"/>
+            <line x1="15" y1="23" x2="20" y2="23" stroke="var(--color-gold)" stroke-width="1.6"/>
+            <line x1="44" y1="23" x2="49" y2="23" stroke="var(--color-gold)" stroke-width="1.6"/>
+            <rect x="24" y="32" width="16" height="10" rx="3" fill="none" stroke="var(--color-gold)" stroke-width="1.4"/>
+            <path d="M17 52 L23 43 L27 47 L34 36 L39 41 L47 30" stroke="var(--color-gold)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <h1>Your strategy, <span>running</span> while you're not watching.</h1>
+      </div>
+
+      <p class="lead">SyntheticBot is built on rules-based strategy logic that scans the market around the clock, so you don't have to sit in front of charts to catch a setup.</p>
+      <div class="hero-actions">
+        <a href="contact.html" class="btn-primary">Buy SyntheticBot →</a>
+        <a href="#terminal" class="btn-secondary">Watch it trade live</a>
+      </div>
+    </div>
+
+    <div class="chart-card">
+      <div class="ch-head">
+        <span class="pair">
+          <span class="bot-icon">
+            <svg width="20" height="20" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="2" y="2" width="28" height="28" rx="8" fill="var(--color-gold-soft)" stroke="var(--color-gold)" stroke-width="1.2"/>
+              <circle cx="16" cy="12" r="4.2" stroke="var(--color-gold)" stroke-width="1.2"/>
+              <circle cx="14.3" cy="11.8" r="0.8" fill="var(--color-gold)"/>
+              <circle cx="17.7" cy="11.8" r="0.8" fill="var(--color-gold)"/>
+              <path d="M9 25 L12.5 19.5 L15 22 L18.5 16.5 L21 19 L23 15.5" stroke="var(--color-gold)" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          EUR/USD · H1
+        </span>
+        <span class="status"><span class="pulse" style="width:6px;height:6px;border-radius:50%;background:var(--color-success);"></span>Position open</span>
+      </div>
+      <svg viewBox="0 0 400 220" xmlns="http://www.w3.org/2000/svg">
+        <g stroke="#1B2028" stroke-width="1">
+          <line x1="0" y1="40" x2="400" y2="40"/>
+          <line x1="0" y1="90" x2="400" y2="90"/>
+          <line x1="0" y1="140" x2="400" y2="140"/>
+          <line x1="0" y1="190" x2="400" y2="190"/>
+        </g>
+        <g>
+          <line class="wick" x1="20" y1="150" x2="20" y2="170"/><rect class="candle-down" x="16" y="155" width="8" height="10"/>
+          <line class="wick" x1="40" y1="140" x2="40" y2="165"/><rect class="candle-up" x="36" y="145" width="8" height="14"/>
+          <line class="wick" x1="60" y1="130" x2="60" y2="158"/><rect class="candle-down" x="56" y="135" width="8" height="16"/>
+          <line class="wick" x1="80" y1="120" x2="80" y2="148"/><rect class="candle-up" x="76" y="126" width="8" height="16"/>
+          <line class="wick" x1="100" y1="112" x2="100" y2="138"/><rect class="candle-up" x="96" y="116" width="8" height="18"/>
+          <line class="wick" x1="120" y1="100" x2="120" y2="128"/><rect class="candle-down" x="116" y="106" width="8" height="16"/>
+          <line class="wick" x1="140" y1="96" x2="140" y2="120"/><rect class="candle-up" x="136" y="100" width="8" height="16"/>
+          <line class="wick" x1="160" y1="86" x2="160" y2="112"/><rect class="candle-up" x="156" y="90" width="8" height="18"/>
+          <line class="wick" x1="180" y1="78" x2="180" y2="104"/><rect class="candle-up" x="176" y="82" width="8" height="18"/>
+          <line class="wick" x1="200" y1="70" x2="200" y2="96"/><rect class="candle-up" x="196" y="74" width="8" height="18"/>
+          <line class="wick" x1="220" y1="66" x2="220" y2="90"/><rect class="candle-down" x="216" y="70" width="8" height="16"/>
+          <line class="wick" x1="240" y1="60" x2="240" y2="84"/><rect class="candle-up" x="236" y="64" width="8" height="16"/>
+          <line class="wick" x1="260" y1="54" x2="260" y2="78"/><rect class="candle-up" x="256" y="58" width="8" height="16"/>
+          <line class="wick" x1="280" y1="48" x2="280" y2="72"/><rect class="candle-up" x="276" y="52" width="8" height="16"/>
+          <line class="wick" x1="300" y1="42" x2="300" y2="66"/><rect class="candle-up" x="296" y="46" width="8" height="16"/>
+          <line class="wick" x1="320" y1="38" x2="320" y2="60"/><rect class="candle-up" x="316" y="42" width="8" height="14"/>
+          <line class="wick" x1="340" y1="32" x2="340" y2="54"/><rect class="candle-up" x="336" y="36" width="8" height="14"/>
+          <line class="wick" x1="360" y1="28" x2="360" y2="48"/><rect class="candle-up" x="356" y="32" width="8" height="12"/>
+        </g>
+        <line class="entry-line" x1="0" y1="126" x2="400" y2="126"/>
+        <text class="marker-label" x="6" y="121">ENTRY 1.0842</text>
+        <line class="sl-line" x1="0" y1="168" x2="400" y2="168"/>
+        <text class="marker-label" x="6" y="182">STOP 1.0798</text>
+      </svg>
+    </div>
+  </div>
+</header>
+
+<section class="terminal" id="terminal">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow"><span class="pulse"></span>LIVE TERMINAL</div>
+      <h2>Watch SyntheticBot trade, live.</h2>
+      <p>A real candlestick chart, a rules-based engine, and automatic entries with stop-loss and take-profit. Connect your Deriv API token to let it trade your account.</p>
+    </div>
+
+    <div class="term-notice">
+      <span class="bot-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="var(--color-gold)" stroke-width="1.4"/><path d="M12 7v6M12 16.5v.5" stroke="var(--color-gold)" stroke-width="1.6" stroke-linecap="round"/></svg></span>
+      <div><b>Paper trading until you connect Deriv.</b> Without a token, trades use a virtual $10,000 and no money moves. With your Deriv token, SyntheticBot places real contracts on that account (demo or real) and only when the chart is on the <b>LIVE FEED</b>. Trading carries risk of loss and no strategy wins every trade. Start with a demo token.</div>
+    </div>
+
+    <div class="term-grid">
+      <div class="term-card">
+        <div class="term-toolbar">
+          <select class="term-select" id="tSymbol" aria-label="Market">
+            <option value="R_75">Volatility 75</option>
+            <option value="R_100">Volatility 100</option>
+            <option value="BOOM1000">Boom 1000</option>
+            <option value="CRASH1000">Crash 1000</option>
+            <option value="frxEURUSD">EUR/USD</option>
+            <option value="frxGBPUSD">GBP/USD</option>
+          </select>
+          <span class="term-status" id="tStatus"><i></i><span id="tStatusText">Connecting…</span></span>
+          <span class="term-price" id="tPrice">—</span>
+        </div>
+        <div class="term-chart-wrap" id="tChartWrap">
+          <canvas id="botChart"></canvas>
+          <div class="chart-overlay" id="tOverlay"><div class="loader-spin"></div>Loading market data…</div>
+        </div>
+        <div class="chart-legend">
+          <span style="--c:#C9A84C;">EMA 9</span>
+          <span style="--c:#7c8cff;">EMA 21</span>
+          <span style="--c:#22C55E;">Take profit</span>
+          <span style="--c:#EF4444;">Stop loss</span>
+          <span style="--c:#ECEFF3;">Entry</span>
+        </div>
+      </div>
+
+      <div class="term-side">
+        <div class="term-card d-card">
+          <div class="d-head"><h4>Deriv account</h4><span class="d-badge" id="dBadge">Paper mode</span></div>
+          <input class="d-in" id="dToken" type="password" autocomplete="off" spellcheck="false" placeholder="Deriv API token (Read + Trade)">
+          <div class="d-row">
+            <label>Stake ($)<input class="d-in" id="dStake" type="number" min="0.35" step="0.5" value="1"></label>
+            <label>Session loss limit ($)<input class="d-in" id="dLoss" type="number" min="0" step="1" value="5"></label>
+          </div>
+          <div class="t-btns">
+            <button class="t-btn" id="dConnect">Connect</button>
+            <button class="t-btn ghost" id="dDisconnect" style="display:none;">Disconnect</button>
+          </div>
+          <label class="d-real" id="dRealRow" style="display:none;"><input type="checkbox" id="dRealOk"> <span>I understand this account uses real money and I can lose my stake on every trade.</span></label>
+          <div class="d-msg" id="dMsg"></div>
+          <div class="t-note">Create the token in your Deriv account under API token with only <b>Read</b> and <b>Trade</b> scopes, never Admin or Payments. It stays in this tab's memory, is sent only to Deriv, and is cleared from the box once connected. Stop-loss and take-profit are stored on Deriv, so they stay active even if you close this page.</div>
+        </div>
+
+        <div class="term-card">
+          <div class="term-botrow">
+            <div>
+              <div class="nm">SyntheticBot</div>
+              <div class="sub" id="tBotSub">Bot is paused</div>
+            </div>
+            <div class="t-toggle" id="tToggle" role="switch" aria-checked="false" tabindex="0" title="Start / pause the bot"></div>
+          </div>
+        </div>
+
+        <div class="term-card">
+          <h4 id="sTitle">Paper account</h4>
+          <div class="t-stats">
+            <div class="t-stat"><div class="v" id="sBalance">$10,000</div><div class="l">Balance</div></div>
+            <div class="t-stat"><div class="v" id="sNet">$0</div><div class="l" id="sNetLabel">Net P&amp;L</div></div>
+            <div class="t-stat"><div class="v" id="sWin">—</div><div class="l">Win rate</div></div>
+            <div class="t-stat"><div class="v" id="sTrades">0</div><div class="l">Closed trades</div></div>
+          </div>
+        </div>
+
+        <div class="term-card">
+          <h4>Open position</h4>
+          <div class="t-open" id="tOpen"><div class="idle">No open position. Start the bot, or place a manual paper trade.</div></div>
+          <div class="t-btns">
+            <button class="t-btn" id="tBuy">Buy</button>
+            <button class="t-btn" id="tSell">Sell</button>
+            <button class="t-btn ghost" id="tClose" disabled>Close</button>
+          </div>
+          <div class="t-note">Strategy: EMA 9/21 crossover, RSI filter, ATR-based stop (1.5×) and target (3×). Paper mode risks 1% per trade. On Deriv it trades multiplier contracts with your stake.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="term-log">
+      <div class="term-card">
+        <div class="term-log-head">
+          <h4>Trade log</h4>
+          <span class="bt" id="tLogMeta">Paper trades only</span>
+        </div>
+        <div class="term-table-wrap">
+          <table class="term-table">
+            <thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>Reason</th><th>P&amp;L</th><th>Source</th></tr></thead>
+            <tbody id="tLogBody"><tr><td class="empty" colspan="8">No trades yet. Turn the bot on and let it work.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+
+
+<section class="log" id="log">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow"><span class="pulse"></span>HOW IT TRADES</div>
+      <h2>One loop, running non-stop.</h2>
+      <p>Every trade SyntheticBot takes follows the same disciplined sequence — no improvising, no second-guessing, no missed sessions.</p>
+    </div>
+
+    <div class="log-entry">
+      <div class="log-step">
+        <span class="bot-icon">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="20" cy="15" r="5.5" stroke="var(--color-gold)" stroke-width="1.4"/>
+            <circle cx="17.8" cy="14.7" r="1" fill="var(--color-gold)"/>
+            <circle cx="22.2" cy="14.7" r="1" fill="var(--color-gold)"/>
+            <path d="M9 30 L13 23 L16 26 L20 19" stroke="var(--color-gold)" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+          </svg>
+        </span>
+      </div>
+      <div class="log-body">
+        <h3>Scan <span class="tag">continuous</span></h3>
+        <p>SyntheticBot reads price action and indicators against a fixed set of criteria, watching for setups that match — every hour of every session, five days a week.</p>
+      </div>
+    </div>
+    <div class="log-entry">
+      <div class="log-step">
+        <span class="bot-icon">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="12" y="10" width="16" height="12" rx="3" stroke="var(--color-gold)" stroke-width="1.4"/>
+            <circle cx="17" cy="16" r="1.1" fill="var(--color-gold)"/>
+            <circle cx="23" cy="16" r="1.1" fill="var(--color-gold)"/>
+            <path d="M14 30 L18 24 L22 27 L27 20" stroke="var(--color-gold)" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+            <circle cx="27" cy="20" r="1.4" fill="var(--color-gold)"/>
+          </svg>
+        </span>
+      </div>
+      <div class="log-body">
+        <h3>Enter <span class="tag">automatic</span></h3>
+        <p>When conditions align with the strategy's rules, SyntheticBot opens the position itself. No manual click, no hesitation, no missed entry while you're asleep or away from the desk.</p>
+      </div>
+    </div>
+    <div class="log-entry">
+      <div class="log-step">
+        <span class="bot-icon">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M20 8 L28 11 V19 C28 25 24.5 29 20 31 C15.5 29 12 25 12 19 V11 L20 8Z" stroke="var(--color-gold)" stroke-width="1.4" fill="none" stroke-linejoin="round"/>
+            <path d="M16.5 19.5 L19 22 L23.5 15.5" stroke="var(--color-gold)" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+      </div>
+      <div class="log-body">
+        <h3>Protect <span class="tag">on entry</span></h3>
+        <p>A stop-loss is attached the moment a trade opens, capping downside from the very first tick — every position, every time.</p>
+      </div>
+    </div>
+    <div class="log-entry">
+      <div class="log-step">
+        <span class="bot-icon">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="20" cy="20" r="9" stroke="var(--color-gold)" stroke-width="1.4"/>
+            <path d="M20 14 V20 L24 23" stroke="var(--color-gold)" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+          </svg>
+        </span>
+      </div>
+      <div class="log-body">
+        <h3>Exit <span class="tag">rule-driven</span></h3>
+        <p>SyntheticBot closes the trade the instant the setup is invalidated or the target is reached, taking the emotion out of when to get out.</p>
+      </div>
+    </div>
+    <div class="log-entry">
+      <div class="log-step">
+        <span class="bot-icon">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M20 10 a10 10 0 1 1 -7.07 2.93" stroke="var(--color-gold)" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+            <path d="M13 8 V13 H18" stroke="var(--color-gold)" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+      </div>
+      <div class="log-body">
+        <h3>Improve <span class="tag">ongoing</span></h3>
+        <p>Strategy logic keeps getting refined, and every update ships to you for the life of your license — no extra charge, no re-purchasing.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="ticket">
+  <div class="wrap ticket-grid">
+    <div class="ticket-copy">
+      <div class="eyebrow"><span class="pulse"></span>WHY TRADERS RUN SYNTHETICBOT</div>
+      <h2>Built for consistency, not adrenaline.</h2>
+      <p>SyntheticBot doesn't get tired, doesn't skip its stop-loss, and doesn't chase a move out of boredom. It executes the same rules whether it's 3am or a Friday close.</p>
+      <ul class="perk-list">
+        <li><span class="bot-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="var(--color-gold)" stroke-width="1.4"/><path d="M8 12.5 L10.5 15 L16 9" stroke="var(--color-gold)" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>Runs 24/5 so you're not tied to the charts</li>
+        <li><span class="bot-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="var(--color-gold)" stroke-width="1.4"/><path d="M8 12.5 L10.5 15 L16 9" stroke="var(--color-gold)" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>Every entry follows predefined, testable criteria</li>
+        <li><span class="bot-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="var(--color-gold)" stroke-width="1.4"/><path d="M8 12.5 L10.5 15 L16 9" stroke="var(--color-gold)" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>Stop-loss attached on every single trade, automatically</li>
+        <li><span class="bot-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="var(--color-gold)" stroke-width="1.4"/><path d="M8 12.5 L10.5 15 L16 9" stroke="var(--color-gold)" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>Exits are rule-based — no emotional exits</li>
+        <li><span class="bot-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="var(--color-gold)" stroke-width="1.4"/><path d="M8 12.5 L10.5 15 L16 9" stroke="var(--color-gold)" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>Lifetime updates to the strategy logic included</li>
+      </ul>
+    </div>
+
+    <div class="order-card">
+      <div class="order-head">
+        <span class="mono">ORDER TICKET</span>
+        <span class="brand-mark">
+          <span class="bot-icon">
+            <svg width="18" height="18" viewBox="0 0 32 32" fill="none">
+              <circle cx="16" cy="13" r="5" stroke="var(--color-gold)" stroke-width="1.3"/>
+              <circle cx="13.8" cy="12.7" r="1" fill="var(--color-gold)"/>
+              <circle cx="18.2" cy="12.7" r="1" fill="var(--color-gold)"/>
+              <path d="M9 26 L12.5 20 L15 22.5 L18.5 16.5 L21.5 19.5 L24 15.5" stroke="var(--color-gold)" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          SYNTHETICBOT
+        </span>
+      </div>
+      <div class="order-body">
+        <div class="order-row"><span class="k">Engine</span><span class="v">Rules-based logic</span></div>
+        <div class="order-row"><span class="k">Uptime</span><span class="v">24/5</span></div>
+        <div class="order-row"><span class="k">Risk control</span><span class="v up">Auto stop-loss</span></div>
+        <div class="order-row"><span class="k">Exit logic</span><span class="v">Invalidation / target</span></div>
+        <div class="order-row"><span class="k">Updates</span><span class="v up">Lifetime</span></div>
+        <a href="contact.html" class="buy-btn">Buy SyntheticBot →</a>
+        <div class="fine">Redirects to our contact page to complete your order.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="brand" style="display:flex; align-items:center; gap:8px;">
+      <span class="bot-icon">
+        <svg width="20" height="20" viewBox="0 0 32 32" fill="none">
+          <circle cx="16" cy="13" r="5" stroke="var(--color-gold)" stroke-width="1.3"/>
+          <circle cx="13.8" cy="12.7" r="1" fill="var(--color-gold)"/>
+          <circle cx="18.2" cy="12.7" r="1" fill="var(--color-gold)"/>
+          <path d="M9 26 L12.5 20 L15 22.5 L18.5 16.5 L21.5 19.5 L24 15.5" stroke="var(--color-gold)" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      SYNTHETICBOT
+    </div>
+    <p class="disclaimer">Trading forex and CFDs carries a high level of risk and may not be suitable for all investors. Automated execution does not eliminate market risk, and past performance of any strategy is not indicative of future results. Only trade with capital you can afford to lose.</p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ───────── pure indicator helpers ───────── */
+  function emaSeries(vals, p){
+    const k = 2/(p+1), out = new Array(vals.length).fill(null);
+    if(vals.length < p) return out;
+    let sum = 0; for(let i=0;i<p;i++) sum += vals[i];
+    let prev = sum/p; out[p-1] = prev;
+    for(let i=p;i<vals.length;i++){ prev = vals[i]*k + prev*(1-k); out[i] = prev; }
+    return out;
+  }
+  function rsiLast(closes, p){
+    if(closes.length <= p) return null;
+    let g=0, l=0;
+    for(let i=1;i<=p;i++){ const d=closes[i]-closes[i-1]; if(d>=0) g+=d; else l-=d; }
+    let ag=g/p, al=l/p;
+    for(let i=p+1;i<closes.length;i++){
+      const d=closes[i]-closes[i-1];
+      ag=(ag*(p-1)+(d>0?d:0))/p; al=(al*(p-1)+(d<0?-d:0))/p;
+    }
+    if(al===0) return 100;
+    return 100 - 100/(1+ag/al);
+  }
+  function atrLast(c, p){
+    if(c.length <= p) return null;
+    const tr=[];
+    for(let i=1;i<c.length;i++){
+      tr.push(Math.max(c[i].h-c[i].l, Math.abs(c[i].h-c[i-1].c), Math.abs(c[i].l-c[i-1].c)));
+    }
+    let a=0; for(let i=0;i<p;i++) a+=tr[i]; a/=p;
+    for(let i=p;i<tr.length;i++) a=(a*(p-1)+tr[i])/p;
+    return a;
+  }
+  /* returns 'buy' | 'sell' | null from closed candles */
+  function signalFrom(candles){
+    if(candles.length < 40) return null;
+    const closes = candles.map(c=>c.c);
+    const e9 = emaSeries(closes, 9), e21 = emaSeries(closes, 21);
+    const n = closes.length-1;
+    if(e9[n]==null || e21[n]==null || e9[n-1]==null || e21[n-1]==null) return null;
+    const rsi = rsiLast(closes, 14);
+    if(rsi==null) return null;
+    if(e9[n-1] <= e21[n-1] && e9[n] > e21[n] && rsi < 72) return 'buy';
+    if(e9[n-1] >= e21[n-1] && e9[n] < e21[n] && rsi > 28) return 'sell';
+    return null;
+  }
+
+  if(typeof document === 'undefined'){ // allow node-based unit tests of the pure functions
+    module.exports = { emaSeries, rsiLast, atrLast, signalFrom };
+    return;
+  }
+
+  /* ───────── DOM ───────── */
+  const $ = id => document.getElementById(id);
+  const canvas = $('botChart');
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const wrap = $('tChartWrap');
+
+  const START_BALANCE = 10000, RISK_PCT = 0.01, SL_ATR = 1.5, TP_ATR = 3;
+  const MAX_CANDLES = 140;
+  const LS_KEY = 'syntheticbot_paper_v1';
+  // 1089 is Deriv's shared test app id. Register your own at api.deriv.com and put it here for production.
+  const DERIV_APP_ID = '1089';
+  const DERIV_URL = 'wss://ws.derivws.com/websockets/v3?app_id=' + DERIV_APP_ID;
+
+  let symbol = $('tSymbol').value;
+  let candles = [];
+  let lastPrice = null;
+  let feedSource = 'connecting';  // 'live' | 'sim' | 'connecting'
+  let botOn = false;
+  let position = null;            // paper: {side,entry,sl,tp,size,auto}  live: + {live:true,contractId,stake,mult}
+  let markers = [];               // {t,side,price}
+  let account = { balance: START_BALANCE, trades: [] };   // paper account (persisted)
+
+  // Deriv account state (memory only — never persisted)
+  let mode = 'paper';             // 'paper' | 'live'
+  let tws = null, tReq = 1, tPending = {}, dAuth = null;
+  let orderInFlight = false, intentionalClose = false;
+  const multCache = {};
+  const live = { trades: [], pnl: 0, balance: null };
+
+  try{
+    const saved = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
+    if(saved && typeof saved.balance === 'number' && Array.isArray(saved.trades)) account = saved;
+  }catch(e){}
+  function persist(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(account)); }catch(e){} }
+
+  function dec(){ return lastPrice != null && lastPrice < 20 ? 5 : 2; }
+  function fmt(n){ return Number(n).toFixed(dec()); }
+  function money(n){ return (n>=0?'+$':'-$') + Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:2}); }
+  function round2(n){ return Math.round(n*100)/100; }
+  function msg(text, kind){ const e = $('dMsg'); e.textContent = text || ''; e.className = 'd-msg ' + (kind || ''); }
+
+  /* ───────── market feed: Deriv live WebSocket, falling back to simulation ───────── */
+  let ws = null, simTimer = null, liveTimeout = null, feedToken = 0;
+
+  function setStatus(kind, text){
+    feedSource = kind;
+    const el = $('tStatus');
+    el.className = 'term-status ' + (kind==='live' ? 'live' : kind==='sim' ? 'sim' : '');
+    $('tStatusText').textContent = text;
+  }
+
+  function stopFeeds(){
+    feedToken++;
+    if(ws){ try{ ws.onclose = null; ws.onerror = null; ws.close(); }catch(e){} ws = null; }
+    if(simTimer){ clearInterval(simTimer); simTimer = null; }
+    if(liveTimeout){ clearTimeout(liveTimeout); liveTimeout = null; }
+  }
+
+  function startFeed(){
+    stopFeeds();
+    candles = []; markers = []; lastPrice = null;
+    $('tOverlay').style.display = 'flex';
+    $('tPrice').textContent = '—';
+    setStatus('connecting', 'Connecting…');
+    const token = feedToken;
+    let gotData = false;
+
+    try{
+      ws = new WebSocket(DERIV_URL);
+    }catch(e){ startSim(token); return; }
+
+    liveTimeout = setTimeout(()=>{ if(!gotData && token===feedToken) startSim(token); }, 6000);
+
+    ws.onopen = ()=>{
+      try{
+        ws.send(JSON.stringify({ ticks_history: symbol, adjust_start_time: 1, count: 120, end: 'latest', style: 'candles', granularity: 60, subscribe: 1 }));
+      }catch(e){}
+    };
+    ws.onmessage = (ev)=>{
+      if(token !== feedToken) return;
+      let m; try{ m = JSON.parse(ev.data); }catch(e){ return; }
+      if(m.error){ if(!gotData) startSim(token); return; }
+      if(m.msg_type === 'candles' && Array.isArray(m.candles) && m.candles.length){
+        gotData = true;
+        candles = m.candles.map(c=>({ t:c.epoch, o:+c.open, h:+c.high, l:+c.low, c:+c.close }));
+        lastPrice = candles[candles.length-1].c;
+        $('tOverlay').style.display = 'none';
+        setStatus('live', 'LIVE FEED · M1');
+        refresh();
+      } else if(m.msg_type === 'ohlc' && m.ohlc){
+        const o = m.ohlc, t = +o.open_time, price = +o.close;
+        gotData = true;
+        const last = candles[candles.length-1];
+        if(last && last.t === t){
+          last.h = Math.max(last.h, +o.high); last.l = Math.min(last.l, +o.low); last.c = price;
+          onPrice(price, false);
+        } else {
+          candles.push({ t, o:+o.open, h:+o.high, l:+o.low, c:price });
+          if(candles.length > MAX_CANDLES) candles.shift();
+          onPrice(price, true);
+        }
+        $('tOverlay').style.display = 'none';
+        setStatus('live', 'LIVE FEED · M1');
+      }
+    };
+    ws.onerror = ()=>{ if(token===feedToken && !gotData) startSim(token); };
+    ws.onclose = ()=>{ if(token===feedToken && !gotData) startSim(token); };
+  }
+
+  function startSim(token){
+    if(token !== feedToken) return;
+    stopFeeds();
+    const tk = feedToken;
+    const baseMap = { R_75:96000, R_100:1500, BOOM1000:9200, CRASH1000:7100, frxEURUSD:1.0845, frxGBPUSD:1.2650 };
+    let price = baseMap[symbol] || 1000;
+    const vol = price * (price < 20 ? 0.00012 : 0.0006);
+    let drift = 0, driftLeft = 0, now = Math.floor(Date.now()/1000);
+    candles = [];
+    for(let i=0;i<90;i++){
+      const o = price; let h=o, l=o;
+      for(let k=0;k<8;k++){
+        if(driftLeft<=0){ drift=(Math.random()-0.5)*vol*0.5; driftLeft=20+Math.random()*40; }
+        driftLeft--; price += drift + (Math.random()-0.5)*vol*2; h=Math.max(h,price); l=Math.min(l,price);
+      }
+      candles.push({ t: now-(90-i)*6, o, h, l, c: price });
+    }
+    lastPrice = price;
+    $('tOverlay').style.display = 'none';
+    setStatus('sim', 'SIMULATED FEED');
+    if(mode==='live') msg('Market feed is simulated right now, so Deriv orders are paused until the live feed is back.', 'warn');
+    refresh();
+    let ticks = 0;
+    simTimer = setInterval(()=>{
+      if(tk !== feedToken) return;
+      if(driftLeft<=0){ drift=(Math.random()-0.5)*vol*0.5; driftLeft=20+Math.random()*40; }
+      driftLeft--;
+      price += drift + (Math.random()-0.5)*vol*2.2;
+      ticks++;
+      const last = candles[candles.length-1];
+      if(ticks % 12 === 0){
+        candles.push({ t: last.t+6, o: price, h: price, l: price, c: price });
+        if(candles.length > MAX_CANDLES) candles.shift();
+        onPrice(price, true);
+      } else {
+        last.h = Math.max(last.h, price); last.l = Math.min(last.l, price); last.c = price;
+        onPrice(price, false);
+      }
+    }, 500);
+  }
+
+  /* ───────── trading engine ───────── */
+  function onPrice(price, newCandle){
+    const prev = lastPrice;
+    lastPrice = price;
+    const pe = $('tPrice');
+    pe.textContent = fmt(price);
+    pe.className = 'term-price ' + (prev!=null && price>=prev ? 'up' : 'down');
+
+    // paper positions are exited locally; live positions are exited by the stop-loss / take-profit stored on Deriv
+    if(position && !position.live){
+      if(position.side==='buy'){
+        if(price <= position.sl) closePaper(position.sl, 'Stop loss');
+        else if(price >= position.tp) closePaper(position.tp, 'Take profit');
+      } else {
+        if(price >= position.sl) closePaper(position.sl, 'Stop loss');
+        else if(price <= position.tp) closePaper(position.tp, 'Take profit');
+      }
+    }
+
+    // strategy is evaluated on closed candles only
+    if(newCandle && botOn && !position && !orderInFlight){
+      const sig = signalFrom(candles.slice(0, -1));
+      if(sig) openPosition(sig, true);
+    }
+    refresh();
+  }
+
+  function openPosition(side, auto){
+    if(position || orderInFlight || lastPrice==null) return;
+    if(mode === 'live'){ placeLive(side, !!auto); return; }
+    const atr = atrLast(candles, 14) || lastPrice*0.001;
+    const entry = lastPrice;
+    const slDist = atr*SL_ATR, tpDist = atr*TP_ATR;
+    const sl = side==='buy' ? entry-slDist : entry+slDist;
+    const tp = side==='buy' ? entry+tpDist : entry-tpDist;
+    const size = (account.balance * RISK_PCT) / slDist;
+    position = { side, entry, sl, tp, size, openedAt: Date.now(), auto: !!auto };
+    markers.push({ t: candles[candles.length-1].t, side, price: entry });
+  }
+
+  function closePaper(exitPrice, reason){
+    if(!position || position.live) return;
+    const dir = position.side==='buy' ? 1 : -1;
+    const pnl = (exitPrice - position.entry) * dir * position.size;
+    account.balance += pnl;
+    account.trades.unshift({
+      time: new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}),
+      symbol: $('tSymbol').selectedOptions[0].textContent,
+      side: position.side, entry: position.entry, exit: exitPrice, reason, pnl,
+      dec: dec(), feed: feedSource, auto: position.auto
+    });
+    account.trades = account.trades.slice(0, 60);
+    position = null;
+    persist();
+    renderLog();
+  }
+
+  /* ───────── Deriv account: authorize, multipliers with server-side SL/TP ───────── */
+  function tSend(obj){
+    return new Promise((resolve, reject)=>{
+      if(!tws || tws.readyState !== 1) return reject(new Error('Not connected to Deriv.'));
+      const id = tReq++;
+      obj.req_id = id;
+      const to = setTimeout(()=>{ delete tPending[id]; reject(new Error('Deriv did not respond in time.')); }, 15000);
+      tPending[id] = { resolve, reject, to };
+      tws.send(JSON.stringify(obj));
+    });
+  }
+
+  function onTradeMsg(ev){
+    let m; try{ m = JSON.parse(ev.data); }catch(e){ return; }
+    const p = m.req_id ? tPending[m.req_id] : null;
+    if(p){
+      clearTimeout(p.to); delete tPending[m.req_id];
+      if(m.error) p.reject(new Error(m.error.message || 'Deriv rejected the request.'));
+      else p.resolve(m);
+    }
+    if(m.error) return;
+    if(m.msg_type === 'balance' && m.balance){ live.balance = +m.balance.balance; renderPanel(); }
+    else if(m.msg_type === 'proposal_open_contract' && m.proposal_open_contract){ handlePoc(m.proposal_open_contract, m.subscription); }
+  }
+
+  function onTradeClose(){
+    const wasLive = mode === 'live';
+    tws = null; dAuth = null; setMode('paper');
+    if(!intentionalClose && wasLive){
+      msg('Connection to Deriv was lost. Any open trade keeps its stop-loss and take-profit on Deriv.', 'err');
+    }
+    intentionalClose = false;
+  }
+
+  async function connectDeriv(){
+    const token = $('dToken').value.trim();
+    if(!token){ msg('Paste your Deriv API token first.', 'warn'); return; }
+    disconnectDeriv(true);
+    msg('Connecting to Deriv…');
+    $('dConnect').disabled = true;
+    try{
+      const sock = new WebSocket(DERIV_URL);
+      tws = sock;
+      await new Promise((resolve, reject)=>{
+        sock.onopen = resolve;
+        sock.onerror = ()=> reject(new Error('Could not reach Deriv.'));
+        setTimeout(()=> reject(new Error('Connection to Deriv timed out.')), 10000);
+      });
+      sock.onmessage = onTradeMsg;
+      sock.onclose = onTradeClose;
+      const a = await tSend({ authorize: token });
+      $('dToken').value = '';           // the token is not kept in the page after authorizing
+      dAuth = { loginid: a.authorize.loginid, currency: a.authorize.currency || 'USD', is_virtual: !!+a.authorize.is_virtual };
+      live.balance = +a.authorize.balance; live.trades = []; live.pnl = 0;
+      tSend({ balance: 1, subscribe: 1 }).catch(()=>{});
+      setMode('live');
+      msg(dAuth.is_virtual
+        ? 'Connected to your DEMO account. Trades are placed with virtual funds.'
+        : 'Connected to your REAL account. Tick the confirmation below before trading.', dAuth.is_virtual ? 'ok' : 'warn');
+    }catch(err){
+      try{ if(tws) tws.close(); }catch(e){}
+      tws = null; dAuth = null; setMode('paper');
+      msg(err.message || 'Could not connect.', 'err');
+    }finally{
+      $('dConnect').disabled = false;
+    }
+  }
+
+  function disconnectDeriv(silent){
+    const hadLive = position && position.live;
+    if(tws){ intentionalClose = true; try{ tws.close(); }catch(e){} tws = null; }
+    dAuth = null;
+    if(hadLive){ position = null; }
+    if(botOn) setBot(false);
+    setMode('paper');
+    if(!silent) msg(hadLive ? 'Disconnected. The open Deriv trade keeps its stop-loss and take-profit on Deriv.' : 'Disconnected from Deriv. Back to paper trading.');
+  }
+
+  function setMode(next){
+    mode = next;
+    const badge = $('dBadge');
+    if(mode === 'live' && dAuth){
+      badge.textContent = (dAuth.is_virtual ? 'DEMO' : 'REAL') + ' · ' + dAuth.loginid;
+      badge.className = 'd-badge ' + (dAuth.is_virtual ? 'demo' : 'real');
+    } else {
+      badge.textContent = 'Paper mode'; badge.className = 'd-badge';
+    }
+    $('dRealRow').style.display = (mode==='live' && dAuth && !dAuth.is_virtual) ? 'flex' : 'none';
+    if(mode !== 'live') $('dRealOk').checked = false;
+    $('dConnect').style.display = mode==='live' ? 'none' : '';
+    $('dDisconnect').style.display = mode==='live' ? '' : 'none';
+    $('dToken').disabled = mode==='live';
+    refresh(); renderLog();
+  }
+
+  async function getMultipliers(sym){
+    if(multCache[sym]) return multCache[sym];
+    const r = await tSend({ contracts_for: sym, currency: dAuth.currency, product_type: 'basic' });
+    const av = (r.contracts_for && r.contracts_for.available) || [];
+    const mult = av.find(c => c.contract_type === 'MULTUP' && Array.isArray(c.multiplier_range));
+    const list = mult ? mult.multiplier_range.map(Number).filter(n=>n>0).sort((a,b)=>a-b) : [];
+    multCache[sym] = list;
+    return list;
+  }
+
+  async function placeLive(side, auto){
+    if(position || orderInFlight || !dAuth) return;
+    if(feedSource !== 'live'){ msg('Deriv orders need the LIVE market feed. The chart is on simulated prices right now.', 'warn'); return; }
+    if(!dAuth.is_virtual && !$('dRealOk').checked){ msg('Tick the real-money confirmation before trading.', 'warn'); return; }
+    const stake = parseFloat($('dStake').value);
+    if(!(stake > 0)){ msg('Enter a stake above 0.', 'warn'); return; }
+    if(live.balance != null && stake > live.balance){ msg('Stake is larger than your balance.', 'warn'); return; }
+    if(!dAuth.is_virtual && live.balance != null && stake > live.balance * 0.1){ msg('For real accounts the stake is capped at 10% of your balance.', 'warn'); return; }
+
+    orderInFlight = true;
+    msg('Placing ' + side.toUpperCase() + ' order on Deriv…');
+    try{
+      const ref = lastPrice;
+      const atr = atrLast(candles, 14) || ref*0.001;
+      const slDist = atr*SL_ATR, tpDist = atr*TP_ATR;
+      const mults = await getMultipliers(symbol);
+      if(!mults.length) throw new Error('Multiplier contracts are not offered on this market for your account.');
+      // largest allowed multiplier whose stop distance still fits inside the stake
+      const maxM = ref / slDist;
+      const eligible = mults.filter(x => x <= maxM);
+      const M = eligible.length ? eligible[eligible.length-1] : mults[0];
+      const slUsd = Math.min(stake, Math.max(0.01, round2(stake*M*slDist/ref)));
+      const tpUsd = Math.max(0.01, round2(stake*M*tpDist/ref));
+
+      const prop = await tSend({
+        proposal: 1, amount: stake, basis: 'stake', currency: dAuth.currency, symbol,
+        contract_type: side==='buy' ? 'MULTUP' : 'MULTDOWN', multiplier: M,
+        limit_order: { stop_loss: slUsd, take_profit: tpUsd }
+      });
+      const pr = prop.proposal;
+      const bought = await tSend({ buy: pr.id, price: pr.ask_price });
+      const entry = +pr.spot || ref;
+      const dir = side==='buy' ? 1 : -1;
+      const slPx = entry - dir * (slUsd * entry / (stake*M));
+      const tpPx = entry + dir * (tpUsd * entry / (stake*M));
+      position = {
+        live: true, side, entry, sl: slPx, tp: tpPx, stake, mult: M, slUsd, tpUsd,
+        contractId: bought.buy.contract_id, buyPrice: +bought.buy.buy_price || stake,
+        auto, openedAt: Date.now(), floating: 0, closing: false
+      };
+      markers.push({ t: candles[candles.length-1].t, side, price: entry });
+      tSend({ proposal_open_contract: 1, contract_id: position.contractId, subscribe: 1 }).catch(()=>{});
+      msg('Order placed. Stop-loss and take-profit are set on Deriv.', 'ok');
+    }catch(err){
+      msg(err.message || 'Order failed.', 'err');
+    }finally{
+      orderInFlight = false;
+      refresh();
+    }
+  }
+
+  function handlePoc(poc, sub){
+    if(!position || !position.live || +poc.contract_id !== +position.contractId) return;
+    if(poc.entry_spot){
+      const e = +poc.entry_spot, dir = position.side==='buy' ? 1 : -1;
+      position.entry = e;
+      position.sl = e - dir * (position.slUsd * e / (position.stake*position.mult));
+      position.tp = e + dir * (position.tpUsd * e / (position.stake*position.mult));
+    }
+    if(poc.profit != null) position.floating = +poc.profit;
+    if(+poc.is_sold){
+      const profit = +poc.profit;
+      const reason = position.closing ? 'Closed manually' : (profit >= 0 ? 'Take profit' : 'Stop loss');
+      finalizeLive(profit, reason, poc.sell_price != null ? +poc.sell_spot || lastPrice : lastPrice);
+      if(sub && sub.id) tSend({ forget: sub.id }).catch(()=>{});
+    }
+    refresh();
+  }
+
+  function finalizeLive(profit, reason, exitPx){
+    if(!position || !position.live) return;
+    live.pnl += profit;
+    live.trades.unshift({
+      time: new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}),
+      symbol: $('tSymbol').selectedOptions[0].textContent,
+      side: position.side, entry: position.entry, exit: exitPx, reason, pnl: profit,
+      dec: dec(), feed: dAuth && !dAuth.is_virtual ? 'deriv-real' : 'deriv-demo', auto: position.auto
+    });
+    live.trades = live.trades.slice(0, 60);
+    position = null;
+    renderLog();
+    const limit = parseFloat($('dLoss').value);
+    if(limit > 0 && live.pnl <= -limit){
+      setBot(false);
+      msg('Session loss limit of $' + limit + ' reached. The bot has been paused.', 'warn');
+    }
+  }
+
+  async function closeLive(){
+    if(!position || !position.live || position.closing) return;
+    position.closing = true;
+    msg('Closing trade on Deriv…');
+    try{
+      const r = await tSend({ sell: position.contractId, price: 0 });
+      if(position && position.live){   // fallback if the contract stream hasn't reported the sale yet
+        const sold = r.sell && r.sell.sold_for != null ? +r.sell.sold_for : null;
+        if(sold != null) finalizeLive(sold - position.buyPrice, 'Closed manually', lastPrice);
+      }
+      msg('Trade closed.', 'ok');
+    }catch(err){
+      if(position) position.closing = false;
+      msg(err.message || 'Could not close the trade.', 'err');
+    }
+    refresh();
+  }
+
+  /* ───────── rendering ───────── */
+  function renderPanel(){
+    const isLive = mode === 'live';
+    const trades = isLive ? live.trades : account.trades;
+    const wins = trades.filter(t=>t.pnl>0).length;
+    $('sTitle').textContent = isLive ? (dAuth && dAuth.is_virtual ? 'Deriv demo account' : 'Deriv real account') : 'Paper account';
+    const bal = isLive ? live.balance : account.balance;
+    $('sBalance').textContent = bal == null ? '—' : (isLive ? (dAuth ? dAuth.currency + ' ' : '') : '$') + Number(bal).toLocaleString(undefined,{maximumFractionDigits:2});
+    const net = isLive ? live.pnl : account.balance - START_BALANCE;
+    const ne = $('sNet'); ne.textContent = money(net); ne.className = 'v ' + (net>0?'up':net<0?'down':'');
+    $('sNetLabel').textContent = isLive ? 'Session P&L' : 'Net P&L';
+    $('sWin').textContent = trades.length ? Math.round(wins/trades.length*100)+'%' : '—';
+    $('sTrades').textContent = trades.length;
+    $('tBotSub').textContent = botOn ? (position ? 'Bot is running · in a trade' : (orderInFlight ? 'Bot is running · placing order' : 'Bot is running · scanning for a setup')) : 'Bot is paused';
+
+    const open = $('tOpen');
+    if(!position){
+      open.innerHTML = '<div class="idle">' + (botOn ? 'Scanning for an EMA crossover on closed candles…' : 'No open position. Start the bot, or place a manual ' + (isLive ? 'trade.' : 'paper trade.')) + '</div>';
+    } else {
+      const dir = position.side==='buy' ? 1 : -1;
+      const fl = position.live ? position.floating : (lastPrice - position.entry) * dir * position.size;
+      open.innerHTML =
+        '<div class="t-open-head"><b style="color:' + (dir>0?'var(--color-success)':'var(--color-danger)') + ';">' + position.side.toUpperCase() + (position.live ? ' · x' + position.mult : '') + '</b>' +
+        '<b style="color:' + (fl>=0?'var(--color-success)':'var(--color-danger)') + ';">' + money(fl) + '</b></div>' +
+        '<div class="r"><span class="k">Entry</span><span class="val">' + fmt(position.entry) + '</span></div>' +
+        '<div class="r"><span class="k">Stop loss</span><span class="val" style="color:var(--color-danger);">' + fmt(position.sl) + (position.live ? ' (−$' + position.slUsd + ')' : '') + '</span></div>' +
+        '<div class="r"><span class="k">Take profit</span><span class="val" style="color:var(--color-success);">' + fmt(position.tp) + (position.live ? ' (+$' + position.tpUsd + ')' : '') + '</span></div>' +
+        '<div class="r"><span class="k">Opened by</span><span class="val">' + (position.auto ? 'SyntheticBot' : 'Manual') + '</span></div>';
+    }
+    const busy = orderInFlight;
+    $('tClose').disabled = !position || busy || (position && position.closing);
+    $('tBuy').disabled = !!position || busy || lastPrice==null;
+    $('tSell').disabled = !!position || busy || lastPrice==null;
+  }
+
+  function feedLabel(f){
+    if(f==='deriv-demo') return ['deriv demo', 'live'];
+    if(f==='deriv-real') return ['deriv real', 'real'];
+    if(f==='live') return ['live feed', 'live'];
+    return ['simulated', ''];
+  }
+
+  function renderLog(){
+    const body = $('tLogBody');
+    const trades = mode==='live' ? live.trades : account.trades;
+    $('tLogMeta').textContent = mode==='live' ? (dAuth && dAuth.is_virtual ? 'Deriv demo trades (this session)' : 'Deriv real trades (this session)') : 'Paper trades only';
+    if(!trades.length){
+      body.innerHTML = '<tr><td class="empty" colspan="8">No trades yet. Turn the bot on and let it work.</td></tr>';
+      return;
+    }
+    body.innerHTML = trades.slice(0, 15).map(t => {
+      const d = t.dec || 2, fl = feedLabel(t.feed);
+      return '<tr><td>' + t.time + '</td><td>' + t.symbol + '</td>' +
+        '<td style="color:' + (t.side==='buy'?'var(--color-success)':'var(--color-danger)') + ';font-weight:700;">' + t.side.toUpperCase() + '</td>' +
+        '<td>' + Number(t.entry).toFixed(d) + '</td><td>' + Number(t.exit).toFixed(d) + '</td><td>' + t.reason + (t.auto?'':' (manual)') + '</td>' +
+        '<td class="' + (t.pnl>=0?'pos':'neg') + '">' + money(t.pnl) + '</td>' +
+        '<td><span class="src-tag ' + fl[1] + '">' + fl[0] + '</span></td></tr>';
+    }).join('');
+  }
+
+  function sizeCanvas(){
+    const r = wrap.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(r.width*dpr); canvas.height = Math.floor(r.height*dpr);
+    canvas.style.width = r.width+'px'; canvas.style.height = r.height+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    return { w:r.width, h:r.height };
+  }
+
+  function drawChart(){
+    const { w, h } = sizeCanvas();
+    ctx.clearRect(0,0,w,h);
+    if(candles.length < 2) return;
+    const padR = 70, padT = 14, padB = 22, padL = 8;
+    const view = candles.slice(-Math.max(30, Math.floor((w-padR-padL)/9)));
+    const closesAll = candles.map(c=>c.c);
+    const e9a = emaSeries(closesAll, 9), e21a = emaSeries(closesAll, 21);
+    const off = candles.length - view.length;
+
+    let hi = -Infinity, lo = Infinity;
+    view.forEach(c=>{ hi=Math.max(hi,c.h); lo=Math.min(lo,c.l); });
+    if(position){ hi=Math.max(hi,position.tp,position.sl); lo=Math.min(lo,position.tp,position.sl); }
+    const span = (hi-lo) || 1; hi += span*0.06; lo -= span*0.06;
+    const yOf = v => padT + (hi-v)/(hi-lo) * (h-padT-padB);
+    const cw = (w-padR-padL)/view.length;
+    const xOf = i => padL + i*cw + cw/2;
+
+    const cs = getComputedStyle(document.documentElement);
+    const up = cs.getPropertyValue('--color-success').trim() || '#22C55E';
+    const dn = cs.getPropertyValue('--color-danger').trim() || '#EF4444';
+    const gold = cs.getPropertyValue('--color-gold').trim() || '#C9A84C';
+    const muted = '#7A8394';
+
+    ctx.font = '10px "JetBrains Mono", monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    for(let i=0;i<=5;i++){
+      const v = lo + (hi-lo)*i/5, y = yOf(v);
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(w-padR,y); ctx.stroke();
+      ctx.fillStyle = muted; ctx.fillText(v.toFixed(dec()), w-padR+6, y);
+    }
+
+    view.forEach((c,i)=>{
+      const x = xOf(i), bull = c.c >= c.o, col = bull ? up : dn;
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, yOf(c.h)); ctx.lineTo(x, yOf(c.l)); ctx.stroke();
+      const top = yOf(Math.max(c.o,c.c)), bh = Math.max(1, Math.abs(yOf(c.o)-yOf(c.c)));
+      const bw = Math.max(2, cw*0.62);
+      ctx.fillRect(x-bw/2, top, bw, bh);
+    });
+
+    function line(series, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 1.4; ctx.beginPath(); let started = false;
+      view.forEach((c,i)=>{ const v = series[off+i]; if(v==null) return; const x=xOf(i), y=yOf(v); if(!started){ctx.moveTo(x,y); started=true;} else ctx.lineTo(x,y); });
+      ctx.stroke();
+    }
+    line(e9a, gold); line(e21a, '#7c8cff');
+
+    function level(v, color, label){
+      const y = yOf(v);
+      ctx.setLineDash([5,4]); ctx.strokeStyle = color; ctx.lineWidth = 1.1;
+      ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(w-padR,y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = color; ctx.fillRect(w-padR+2, y-8, padR-4, 16);
+      ctx.fillStyle = '#0B0D12'; ctx.font = '600 10px "JetBrains Mono", monospace';
+      ctx.fillText(label + ' ' + v.toFixed(dec()), w-padR+5, y);
+    }
+    if(position){
+      level(position.entry, '#ECEFF3', 'ENT');
+      level(position.sl, dn, 'SL');
+      level(position.tp, up, 'TP');
+    }
+
+    markers.forEach(m=>{
+      const idx = view.findIndex(c=>c.t===m.t);
+      if(idx<0) return;
+      const x = xOf(idx), y = yOf(m.price), s = 6;
+      ctx.fillStyle = m.side==='buy' ? up : dn;
+      ctx.beginPath();
+      if(m.side==='buy'){ ctx.moveTo(x,y+4); ctx.lineTo(x-s,y+4+s*1.6); ctx.lineTo(x+s,y+4+s*1.6); }
+      else { ctx.moveTo(x,y-4); ctx.lineTo(x-s,y-4-s*1.6); ctx.lineTo(x+s,y-4-s*1.6); }
+      ctx.closePath(); ctx.fill();
+    });
+
+    if(lastPrice!=null){
+      const y = yOf(lastPrice), bull = candles[candles.length-1].c >= candles[candles.length-1].o;
+      ctx.setLineDash([2,3]); ctx.strokeStyle = bull?up:dn; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(w-padR,y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = bull?up:dn; ctx.fillRect(w-padR+2, y-8, padR-4, 16);
+      ctx.fillStyle = '#0B0D12'; ctx.font = '700 10px "JetBrains Mono", monospace';
+      ctx.fillText(lastPrice.toFixed(dec()), w-padR+5, y);
+    }
+  }
+
+  let rafPending = false;
+  function refresh(){
+    renderPanel();
+    if(rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(()=>{ rafPending = false; drawChart(); });
+  }
+
+  /* ───────── controls ───────── */
+  function setBot(on){
+    if(on && mode === 'live'){
+      if(!dAuth.is_virtual && !$('dRealOk').checked){ msg('Tick the real-money confirmation before starting the bot.', 'warn'); return; }
+      if(feedSource !== 'live'){ msg('The bot can only trade your Deriv account on the LIVE market feed.', 'warn'); return; }
+    }
+    botOn = on;
+    const t = $('tToggle');
+    t.classList.toggle('on', on); t.setAttribute('aria-checked', on ? 'true' : 'false');
+    refresh();
+  }
+  $('tToggle').addEventListener('click', ()=> setBot(!botOn));
+  $('tToggle').addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); setBot(!botOn); } });
+  $('tBuy').addEventListener('click', ()=>{ openPosition('buy', false); refresh(); });
+  $('tSell').addEventListener('click', ()=>{ openPosition('sell', false); refresh(); });
+  $('tClose').addEventListener('click', ()=>{
+    if(!position) return;
+    if(position.live) closeLive();
+    else if(lastPrice!=null){ closePaper(lastPrice, 'Closed manually'); refresh(); }
+  });
+  $('tSymbol').addEventListener('change', ()=>{
+    if(position && position.live){
+      $('tSymbol').value = symbol;
+      msg('Close your open Deriv trade before changing market.', 'warn');
+      return;
+    }
+    if(position && lastPrice!=null) closePaper(lastPrice, 'Market changed');
+    symbol = $('tSymbol').value; startFeed();
+  });
+  $('dConnect').addEventListener('click', connectDeriv);
+  $('dDisconnect').addEventListener('click', ()=> disconnectDeriv(false));
+  $('dToken').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); connectDeriv(); } });
+  window.addEventListener('resize', ()=>{ if(candles.length) drawChart(); });
+
+  setMode('paper');
+  renderLog();
+  renderPanel();
+  startFeed();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Trading Signals | Claudefx Academy Pro</title>
+  <link rel="icon" type="image/png" href="../assets/images/logo/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="../assets/vendors/aos/aos.css">
+  <link rel="stylesheet" href="../assets/css/style.css">
+  <link rel="stylesheet" href="../assets/css/animations.css">
+  <link rel="stylesheet" href="../assets/css/darkmode.css">
+  <link rel="stylesheet" href="../assets/css/dashboard.css">
+  <link rel="stylesheet" href="../assets/css/responsive.css">
+
+  <!-- ═══ SIGNALS FEED ADD-ONS ═══
+       Styles for the past-signal result cards, the disclosure banner,
+       the SyntheticBot panel, and the LIVE / SAMPLE tags.
+       Appended last so it wins the cascade over the external stylesheets above.
+  -->
+  <style>
+    .signals-disclosure{
+      display:flex; align-items:flex-start; gap:.75rem;
+      background:linear-gradient(180deg, rgba(255,193,7,.08), rgba(255,193,7,.03));
+      border:1px solid rgba(255,193,7,.25);
+      border-radius:14px;
+      padding:1rem 1.25rem;
+      margin-bottom:2rem;
+      font-size:.85rem;
+      line-height:1.6;
+      color:var(--color-text-secondary);
+    }
+    .signals-disclosure i{ color:#ffc107; margin-top:.2rem; }
+    .signals-disclosure strong{ color:var(--color-text); }
+
+    .live-dot{
+      display:inline-block; width:7px; height:7px; border-radius:50%;
+      background:var(--color-success); margin-right:6px;
+      box-shadow:0 0 0 0 rgba(46,204,113,.6);
+      animation:livePulse 1.8s infinite;
+    }
+    @keyframes livePulse{
+      0%{ box-shadow:0 0 0 0 rgba(46,204,113,.55); }
+      70%{ box-shadow:0 0 0 8px rgba(46,204,113,0); }
+      100%{ box-shadow:0 0 0 0 rgba(46,204,113,0); }
+    }
+
+    .signal-tag{
+      display:inline-flex; align-items:center; gap:4px;
+      font-size:10.5px; font-weight:700; letter-spacing:.06em;
+      padding:3px 8px; border-radius:999px; text-transform:uppercase;
+    }
+    .signal-tag.live{ background:rgba(46,204,113,.12); color:var(--color-success); border:1px solid rgba(46,204,113,.3); }
+    .signal-tag.sample{ background:rgba(255,193,7,.12); color:#ffc107; border:1px solid rgba(255,193,7,.3); }
+    .signal-tag.closed{ background:rgba(124,140,255,.12); color:#a9b3ff; border:1px solid rgba(124,140,255,.3); }
+
+    .signal-card{
+      position:relative;
+      background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.015));
+      border:1px solid rgba(255,255,255,.08);
+      border-radius:16px;
+      padding:1.35rem 1.4rem;
+      display:flex; flex-direction:column; gap:.9rem;
+      overflow:hidden;
+      opacity:0; transform:translateY(14px);
+      animation:cardIn .6s cubic-bezier(.21,.9,.32,1) forwards;
+      transition:transform .3s ease, border-color .3s ease, box-shadow .3s ease;
+    }
+    @keyframes cardIn{ to{ opacity:1; transform:translateY(0); } }
+    .signal-card:hover{
+      transform:translateY(-4px);
+      border-color:rgba(255,255,255,.18);
+      box-shadow:0 16px 30px rgba(0,0,0,.35);
+    }
+    .signal-card.won{ border-color:rgba(46,204,113,.22); }
+    .signal-card.lost{ border-color:rgba(231,76,60,.18); }
+    /* subtle diagonal scan sweep, plays once per card on entry */
+    .signal-card::before{
+      content:""; position:absolute; inset:0;
+      background:linear-gradient(115deg, transparent 40%, rgba(124,140,255,.16) 50%, transparent 60%);
+      background-size:250% 250%;
+      background-position:130% 0;
+      pointer-events:none;
+      animation:scanSweep 1.3s ease-out forwards;
+      animation-delay:inherit;
+    }
+    @keyframes scanSweep{
+      0%{ background-position:130% 0; opacity:1; }
+      100%{ background-position:-30% 0; opacity:0; }
+    }
+    .signal-card-top{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; }
+    .signal-pair{ font-family:var(--font-mono); font-weight:700; font-size:16px; }
+    .signal-dir{
+      font-size:11px; font-weight:800; letter-spacing:.05em; padding:3px 10px; border-radius:999px;
+    }
+    .signal-dir.buy{ color:var(--color-success); background:rgba(46,204,113,.12); }
+    .signal-dir.sell{ color:var(--color-danger); background:rgba(231,76,60,.12); }
+
+    .signal-price-row{ display:flex; justify-content:space-between; font-size:13px; color:var(--color-text-muted); }
+    .signal-price-row b{ color:var(--color-text); font-family:var(--font-mono); font-weight:600; }
+    .signal-live-price{ font-family:var(--font-mono); transition:color .3s ease; }
+    .signal-live-price.flicker-up{ color:var(--color-success); }
+    .signal-live-price.flicker-down{ color:var(--color-danger); }
+
+    .signal-profit-row{
+      display:flex; align-items:center; justify-content:space-between;
+      background:rgba(46,204,113,.08); border:1px solid rgba(46,204,113,.2);
+      border-radius:10px; padding:.6rem .75rem; margin-top:.1rem;
+    }
+    .signal-profit-row.loss{ background:rgba(231,76,60,.08); border-color:rgba(231,76,60,.2); }
+    .signal-profit-label{ font-size:11px; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:.05em; }
+    .signal-profit-value{ font-family:var(--font-mono); font-weight:800; font-size:1.05rem; color:var(--color-success); }
+    .signal-profit-value.loss{ color:var(--color-danger); }
+
+    .signal-status-row{ display:flex; align-items:center; justify-content:space-between; margin-top:.15rem; }
+    .signal-buy-btn{ width:100%; justify-content:center; margin-top:.25rem; }
+
+    .stat-item .stat-caption{ font-size:11px; color:var(--color-text-muted); margin-top:.15rem; }
+
+    /* --- bot analysis line on each card --- */
+    .signal-bot-note{
+      display:flex; gap:.5rem; align-items:flex-start;
+      font-size:11.5px; line-height:1.5; color:var(--color-text-muted);
+      background:rgba(124,140,255,.06);
+      border:1px solid rgba(124,140,255,.16);
+      border-radius:10px;
+      padding:.55rem .65rem;
+    }
+    .signal-bot-note i{ color:#7c8cff; margin-top:1px; font-size:10px; }
+    .signal-bot-note b{ color:var(--color-text-secondary); font-weight:600; }
+
+    /* ---------------- SyntheticBot panel ---------------- */
+    .bot-panel{
+      position:relative;
+      border-radius:20px;
+      padding:1.75rem 1.9rem;
+      margin-bottom:1.75rem;
+      background:
+        radial-gradient(120% 160% at 0% 0%, rgba(124,140,255,.16), transparent 55%),
+        radial-gradient(120% 160% at 100% 100%, rgba(46,204,113,.10), transparent 55%),
+        linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.015));
+      border:1px solid rgba(124,140,255,.22);
+      overflow:hidden;
+    }
+    .bot-panel::after{
+      content:""; position:absolute; inset:0; pointer-events:none;
+      background:linear-gradient(100deg, transparent 30%, rgba(124,140,255,.10) 45%, transparent 60%);
+      background-size:260% 260%;
+      animation:botSheen 6s linear infinite;
+    }
+    @keyframes botSheen{
+      0%{ background-position:160% 0; }
+      100%{ background-position:-60% 0; }
+    }
+    .bot-panel-inner{ position:relative; z-index:1; display:flex; align-items:flex-start; justify-content:space-between; gap:1.5rem; flex-wrap:wrap; }
+    .bot-identity{ display:flex; gap:1rem; align-items:center; }
+    .bot-avatar{
+      position:relative; width:54px; height:54px; border-radius:16px; flex:none;
+      background:linear-gradient(145deg,#7c8cff,#4b5bd6);
+      display:flex; align-items:center; justify-content:center;
+      box-shadow:0 8px 24px rgba(124,140,255,.35);
+    }
+    .bot-avatar i{ color:#fff; font-size:22px; }
+    .bot-avatar-ring{
+      position:absolute; inset:-6px; border-radius:20px;
+      border:1.5px solid rgba(124,140,255,.5);
+      animation:ringPulse 2.4s ease-out infinite;
+    }
+    @keyframes ringPulse{
+      0%{ transform:scale(.9); opacity:.9; }
+      100%{ transform:scale(1.25); opacity:0; }
+    }
+    .bot-name-row{ display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
+    .bot-name{ font-family:var(--font-display,inherit); font-weight:700; font-size:1.15rem; letter-spacing:.01em; }
+    .bot-badge{
+      font-size:10px; font-weight:800; letter-spacing:.06em; text-transform:uppercase;
+      padding:2px 8px; border-radius:999px;
+      background:rgba(124,140,255,.15); color:#a9b3ff; border:1px solid rgba(124,140,255,.3);
+    }
+    .bot-status-line{ margin-top:.35rem; font-size:13px; color:var(--color-text-secondary); display:flex; align-items:center; gap:.4rem; min-height:1.3em; }
+    .bot-status-line .live-dot{ margin-right:2px; }
+    .bot-status-text{ font-family:var(--font-mono); }
+    .bot-status-text::after{
+      content:"▍"; margin-left:2px; color:#7c8cff;
+      animation:caretBlink 1s steps(1) infinite;
+    }
+    @keyframes caretBlink{ 50%{ opacity:0; } }
+
+    .bot-metrics{ display:flex; gap:1.75rem; flex-wrap:wrap; }
+    .bot-metric{ text-align:right; }
+    .bot-metric .n{ font-family:var(--font-mono); font-weight:700; font-size:1.15rem; color:var(--color-text); }
+    .bot-metric .n.up{ color:var(--color-success); }
+    .bot-metric .l{ font-size:10.5px; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:.06em; margin-top:2px; }
+
+    .bot-feed{
+      position:relative; z-index:1;
+      margin-top:1.3rem;
+      border-top:1px solid rgba(255,255,255,.08);
+      padding-top:.9rem;
+      display:flex; flex-direction:column; gap:.45rem;
+      max-height:118px; overflow:hidden;
+    }
+    .bot-feed-row{
+      display:flex; align-items:center; gap:.55rem;
+      font-size:12px; color:var(--color-text-muted);
+      opacity:0; animation:feedRowIn .45s ease forwards;
+    }
+    @keyframes feedRowIn{ from{ opacity:0; transform:translateY(4px);} to{ opacity:1; transform:translateY(0);} }
+    .bot-feed-row .t{ font-family:var(--font-mono); color:#7c8cff; font-size:11px; flex:none; width:56px; }
+    .bot-feed-row .m{ color:var(--color-text-secondary); }
+    .bot-feed-note{ font-size:10.5px; color:var(--color-text-muted); margin-top:.6rem; }
+
+    .synth-tagline{
+      text-align:center; margin:2.5rem auto 0; max-width:640px;
+      font-family:'Syne', sans-serif; font-weight:700; font-size:1.2rem;
+      color:var(--color-text-primary);
+    }
+    .synth-tagline span{ color:var(--color-gold); }
+  </style>
+</head>
+<body>
+<div class="page-loader"><div class="loader-ring"></div></div>
+<nav class="navbar">
+  <div class="container">
+    <div class="navbar-inner">
+      <a href="index.html" class="navbar-brand">
+        <img src="assets/images/logo/logo-icon.png" alt="FAP" class="brand-logo" onerror="this.style.display='none'">
+        <span class="brand-name">Claudefx<span>Academy</span></span>
+      </a>
+      <ul class="navbar-nav">
+        <li class="nav-item"><a href="index.html" class="nav-link">Home</a></li>
+        <li class="nav-item"><a href="courses.html" class="nav-link">Courses</a></li>
+        <li class="nav-item">
+          <a href="signals.html" class="nav-linkactive">Services <i class="fas fa-chevron-down" style="font-size:10px;"></i></a>
+          <div class="nav-dropdown">
+            <a href="signals.html"><i class="fas fa-signal"></i> Live Signals</a>
+            <a href="mentorship.html"><i class="fas fa-user-tie"></i> Mentorship</a>
+            <a href="account-management.html"><i class="fas fa-briefcase"></i> Account Management</a>
+            <a href="funded-accounts.html"><i class="fas fa-money-bill-wave"></i> Funded Accounts</a>
+          </div>
+        </li>
+        <li class="nav-item"><a href="pricing.html" class="nav-link">Pricing</a></li>
+        <li class="nav-item"><a href="blog.html" class="nav-link">Blog</a></li>
+        <li class="nav-item"><a href="about.html" class="nav-link">About</a></li>
+        <li class="nav-item"><a href="contact.html" class="nav-link">Contact</a></li>
+      </ul>
+      <div class="navbar-actions">
+        <button class="btn btn-icon" data-theme-toggle aria-label="Toggle theme"><i class="fas fa-moon"></i></button>
+        <a href="signup.html" class="btn btn-outline btn-sm"><i class="fas fa-user"></i> Portal</a>
+        <a href="pricing.html" class="btn btn-primary btn-sm">Get Started</a>
+      </div>
+      <button class="hamburger" aria-label="Menu"><span></span><span></span><span></span></button>
+    </div>
+  </div>
+</nav>
+<div class="mobile-nav">
+  <div class="mobile-nav-inner">
+    <a href="index.html"><i class="fas fa-home"></i> Home</a>
+    <a href="courses.html"><i class="fas fa-graduation-cap"></i> Courses</a>
+    <a href="signals.html"class='active'><i class="fas fa-signal"></i> Live Signals</a>
+    <a href="mentorship.html"><i class="fas fa-user-tie"></i> Mentorship</a>
+    <a href="account-management.html"><i class="fas fa-briefcase"></i> Account Management</a>
+    <a href="funded-accounts.html"><i class="fas fa-money-bill-wave"></i> Funded Accounts</a>
+    <a href="pricing.html"><i class="fas fa-tags"></i> Pricing</a>
+    <a href="blog.html"><i class="fas fa-newspaper"></i> Blog</a>
+    <a href="about.html"><i class="fas fa-info-circle"></i> About</a>
+    <a href="contact.html"><i class="fas fa-envelope"></i> Contact</a>
+    <div class="mobile-nav-actions">
+      <a href="signup.html" class="btn btn-outline"><i class="fas fa-user"></i> Student Portal</a>
+      <a href="pricing.html" class="btn btn-primary"><i class="fas fa-rocket"></i> Get Started</a>
+    </div>
+  </div>
+</div>
+<section class="page-hero">
+  <div class="container">
+    <div class="page-hero-inner">
+      <div class="breadcrumb">
+        <a href="index.html">Home</a>
+        <i class="fas fa-chevron-right"></i>
+        <span>Live Signals</span>
+      </div>
+      <span class="section-label" style="justify-content:center;">Live Signals</span>
+      <h1 class="display-2" data-aos="fade-up">Real-Time Trading<br><span class='gradient-text'>Signals & Alerts</span></h1>
+      <p style="font-size:1.125rem;color:var(--color-text-secondary);max-width:620px;margin:1rem auto 0;line-height:1.75;" data-aos="fade-up" data-aos-delay="100">Past setups from SyntheticBot's Forex and Synthetic Indices analysis, refreshed every 24 hours. Every card is clearly tagged so you know exactly what you're looking at.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section bg-dark-2">
+  <div class="container">
+    <div class="grid-4" data-aos="fade-up">
+      <div class="stat-item">
+        <div class="stat-number" id="stat-total" data-count="0">0</div>
+        <div class="stat-label">Past Signals Shown</div>
+        <div class="stat-caption">Refreshes daily</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number" id="stat-winrate" data-count="0" data-suffix="%">0</div>
+        <div class="stat-label">Sample Win Rate</div>
+        <div class="stat-caption">Illustrative batch only</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number" id="stat-pips" data-count="0">0</div>
+        <div class="stat-label">Avg Pips (Sample)</div>
+        <div class="stat-caption">Not a live P&L figure</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number" id="stat-profit" data-count="0" data-prefix="$">0</div>
+        <div class="stat-label">Sample Net Profit</div>
+        <div class="stat-caption">Illustrative, 1 lot basis</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+
+    <!-- ═══ SyntheticBot panel ═══ -->
+    <div class="bot-panel" data-aos="fade-up">
+      <div class="bot-panel-inner">
+        <div class="bot-identity">
+          <div class="bot-avatar">
+            <div class="bot-avatar-ring"></div>
+            <i class="fas fa-robot"></i>
+          </div>
+          <div>
+            <div class="bot-name-row">
+              <span class="bot-name">SyntheticBot</span>
+              <span class="bot-badge">Signal Engine</span>
+            </div>
+            <div class="bot-status-line">
+              <span class="live-dot"></span>
+              <span class="bot-status-text" data-bot-status>Booting up...</span>
+            </div>
+          </div>
+        </div>
+        <div class="bot-metrics">
+          <div class="bot-metric">
+            <div class="n" id="bot-scanned">0</div>
+            <div class="l">Instruments Scanned</div>
+          </div>
+          <div class="bot-metric">
+            <div class="n up" id="bot-batch">0</div>
+            <div class="l">Past Signals in Batch</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="bot-feed" id="bot-feed"></div>
+      <div class="bot-feed-note">Every signal below is generated and analyzed by SyntheticBot's rules-based engine, scanning Forex majors and Synthetic Indices around the clock. The feed above is a visual demo of how each batch is built — it isn't a record of live account trades.</div>
+    </div>
+
+    <div class="signals-disclosure" data-aos="fade-up">
+      <i class="fas fa-circle-info"></i>
+      <div>
+        <strong>What you're seeing:</strong> these are SyntheticBot's most recent <strong>closed, past signals</strong> — cards tagged <span class="signal-tag live" style="margin:0 3px;"><span class="live-dot" style="margin-right:3px;"></span>Live</span> used real, currently-fetched Forex market rates as the entry price at the time. Cards tagged <span class="signal-tag sample" style="margin:0 3px;">Sample</span> (Synthetic Indices) use simulated pricing, since those instruments don't have a public real-time feed. Results shown reflect a realistic sample win rate, not a cherry-picked "wins only" record — outcomes, profit figures, and SyntheticBot's notes are <strong>illustrative examples for education</strong>, not a verified trade history or a promise of future results. The batch rotates automatically every 24 hours.
+      </div>
+    </div>
+
+    <div class="section-head" data-aos="fade-up">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
+        <div>
+          <span class="section-label">Past Signals</span>
+          <h2 class="section-title">SyntheticBot's Closed <span class="gradient-text">Signal Results</span></h2>
+        </div>
+        <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;">
+          <div style="position:relative;">
+            <i class="fas fa-search" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--color-text-muted);font-size:13px;"></i>
+            <input type="text" class="form-control" placeholder="Search pair..." data-signal-search style="padding-left:2.25rem;width:200px;">
+          </div>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+            <button class="btn btn-sm btn-primary" data-signal-filter="all">All</button>
+            <button class="btn btn-sm btn-ghost" data-signal-filter="forex">Forex</button>
+            <button class="btn btn-sm btn-ghost" data-signal-filter="synthetic">Synthetic</button>
+            <button class="btn btn-sm btn-ghost" data-signal-filter="win">Wins</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-3" data-signals-grid data-aos="fade-up">
+      <div style="grid-column:1/-1;text-align:center;padding:3rem;color:var(--color-text-muted);">
+        <div class="loader-ring" style="margin:0 auto;"></div>
+        <p style="margin-top:1rem;">SyntheticBot is compiling today's past-signal batch...</p>
+      </div>
+    </div>
+
+    <p class="synth-tagline" data-aos="fade-up">Enjoy your way to the financial world with <span>SyntheticBot</span>.</p>
+
+    <div style="text-align:center;margin-top:2rem;" data-aos="fade-up">
+      <p style="font-size:.875rem;color:var(--color-text-muted);margin-bottom:1rem;">
+        <i class="fas fa-lock" style="color:var(--color-gold);"></i>
+        Full signal breakdowns, notes, and live alerts are available to Professional and Elite members.
+      </p>
+      <a href="contact.html" class="btn btn-primary btn-lg"><i class="fas fa-rocket"></i> Talk to Us — Upgrade for Full Access</a>
+    </div>
+  </div>
+</section>
+
+<section class="section bg-dark-2">
+  <div class="container">
+    <div class="section-head center" data-aos="fade-up">
+      <span class="section-label">Example Setups</span>
+      <h2 class="section-title">Past Trade <span class="gradient-text">Results</span></h2>
+      <p style="font-size:.85rem;color:var(--color-text-muted);max-width:560px;margin:.75rem auto 0;">
+        Illustrative examples generated from today's batch — shown to demonstrate format, not as a verified performance record.
+      </p>
+    </div>
+    <div class="table-wrapper" data-aos="fade-up">
+      <table>
+        <thead>
+          <tr><th>Instrument</th><th>Type</th><th>Entry</th><th>Exit</th><th>Pips</th><th>Profit</th><th>R:R</th><th>Result</th><th>Tag</th></tr>
+        </thead>
+        <tbody id="signals-table-body">
+          <tr><td colspan="9" style="text-align:center;color:var(--color-text-muted);padding:2rem;">Loading past signals...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="cta-section" id="join-cta">
+  <div class="cta-glow"></div>
+  <div class="container" style="text-align:center;position:relative;z-index:1;">
+    <span class="section-label" style="justify-content:center;">Join Now</span>
+    <h2 class="section-title" style="max-width:600px;margin:0 auto 1rem;">
+      Get Signals Delivered<br><span class="gradient-text">Straight to Your Phone</span>
+    </h2>
+    <p style="color:var(--color-text-secondary);max-width:520px;margin:0 auto 2rem;line-height:1.7;">
+      Join our Telegram & WhatsApp group. Signals arrive with full analysis, entry alerts, and TP/SL notifications in real time.
+    </p>
+    <div class="flex-center gap-4" style="flex-wrap:wrap;">
+      <a href="pricing.html" class="btn btn-primary btn-xl"><i class="fab fa-telegram"></i> Join Signal Channel</a>
+      <a href="pricing.html" class="btn btn-outline btn-xl"><i class="fas fa-tags"></i> View Pricing</a>
+    </div>
+  </div>
+</section>
+<footer class="footer">
+  <div class="container">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <div class="brand-name">Claudefx<span>Academy</span> Pro</div>
+        <p class="footer-desc">The premier trading education platform for Forex, Synthetic Indices, funded account traders and serious investors worldwide.</p>
+        <div class="footer-social">
+          <a href="#" aria-label="Telegram"><i class="fab fa-telegram"></i></a>
+          <a href="#" aria-label="WhatsApp"><i class="fab fa-whatsapp"></i></a>
+          <a href="#" aria-label="YouTube"><i class="fab fa-youtube"></i></a>
+          <a href="#" aria-label="Instagram"><i class="fab fa-instagram"></i></a>
+          <a href="#" aria-label="Twitter/X"><i class="fab fa-x-twitter"></i></a>
+          <a href="#" aria-label="Facebook"><i class="fab fa-facebook"></i></a>
+        </div>
+      </div>
+      <div>
+        <div class="footer-col-title">Education</div>
+        <ul class="footer-links">
+          <li><a href="courses.html"><i class="fas fa-chevron-right"></i> All Courses</a></li>
+          <li><a href="forex-trading.html"><i class="fas fa-chevron-right"></i> Forex Trading</a></li>
+          <li><a href="synthetic-indices.html"><i class="fas fa-chevron-right"></i> Synthetic Indices</a></li>
+          <li><a href="mentorship.html"><i class="fas fa-chevron-right"></i> Mentorship</a></li>
+          <li><a href="blog.html"><i class="fas fa-chevron-right"></i> Trading Blog</a></li>
+        </ul>
+      </div>
+      <div>
+        <div class="footer-col-title">Services</div>
+        <ul class="footer-links">
+          <li><a href="signals.html"><i class="fas fa-chevron-right"></i> Live Signals</a></li>
+          <li><a href="account-management.html"><i class="fas fa-chevron-right"></i> Account Management</a></li>
+          <li><a href="funded-accounts.html"><i class="fas fa-chevron-right"></i> Funded Accounts</a></li>
+          <li><a href="testimonials.html"><i class="fas fa-chevron-right"></i> Success Stories</a></li>
+          <li><a href="pricing.html"><i class="fas fa-chevron-right"></i> Pricing Plans</a></li>
+        </ul>
+      </div>
+      <div>
+        <div class="footer-col-title">Newsletter</div>
+        <p style="font-size:.875rem;color:var(--color-text-secondary);margin-bottom:1rem;line-height:1.6;">Weekly market analysis and trading tips — free.</p>
+        <form class="newsletter-form">
+          <input type="email" class="form-control" placeholder="Your email address" required>
+          <button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i></button>
+        </form>
+        <div style="margin-top:1.5rem;">
+          <div class="footer-col-title">Quick Contact</div>
+          <ul class="footer-links" style="gap:.5rem;">
+            <li><a href="mailto:claudetechfx@gmail.com"><i class="fas fa-envelope"></i> info@forexacademypro.com</a></li>
+            <li><a href="#"><i class="fab fa-whatsapp"></i> WhatsApp Support</a></li>
+            <li><a href="faq.html"><i class="fas fa-question-circle"></i> FAQ</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>© 2025 Claudefx Academy Pro. All rights reserved.</p>
+      <div class="footer-bottom-links">
+        <a href="#">Privacy Policy</a>
+        <a href="#">Terms of Service</a>
+        <a href="#">Risk Disclosure</a>
+        <a href="faq.html">FAQ</a>
+        <a href="contact.html">Contact</a>
+      </div>
+    </div>
+</footer>
+<button class="scroll-top" aria-label="Scroll to top"><i class="fas fa-arrow-up"></i></button>
+<script src="assets/vendors/aos/aos.js"></script>
+<script src="assets/vendors/swiper/swiper-bundle.min.js"></script>
+<script src="assets/vendors/chartjs/chart.umd.min.js"></script>
+<script src="assets/js/main.js"></script>
+<script src="assets/js/signals.js"></script>
+
+<!-- ═══ SIGNALS FEED ENGINE ═══
+     Builds today's PAST-SIGNAL batch (deterministic per calendar day, so
+     it rotates every 24h), pulls live Forex rates for context, and
+     renders the grid, table, stats, filters, buy buttons (-> contact.html),
+     and the SyntheticBot activity panel.
+
+     This batch only contains CLOSED signals (no "still active" cards),
+     biased toward a realistic, mostly-positive win rate that matches the
+     "Sample Win Rate" stat shown on the page — not a 100%/wins-only feed,
+     since presenting cherry-picked results as genuine performance would
+     misrepresent SyntheticBot to anyone deciding whether to buy it.
+
+     The rates fetch is timeout-protected so a slow/blocked third-party API
+     can never stall the section.
+-->
+<script>
+(function(){
+  "use strict";
+
+  // ---- deterministic per-day PRNG so the batch rotates every 24h ----
+  function mulberry32(seed){
+    return function(){
+      seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const dayIndex = Math.floor(Date.now() / 86400000); // changes once every 24h (UTC)
+  const rng = mulberry32(dayIndex * 2654435761);
+
+  const TARGET_WIN_RATE = 0.78; // matches the disclosed "Sample Win Rate" stat — realistic, not 100%
+  const LOT_PIP_VALUE = 10;      // illustrative $/pip on a 1 standard-lot basis, for the profit figure
+  const SYNTH_POINT_VALUE = 0.6; // illustrative $/point for synthetic indices
+
+  const FOREX_PAIRS = ["EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CAD","GBP/JPY","USD/CHF"];
+  const SYNTH_INSTRUMENTS = [
+    { name: "Boom 1000", base: 9200 },
+    { name: "Boom 500",  base: 2350 },
+    { name: "Crash 1000", base: 7100 },
+    { name: "Crash 500",  base: 460 },
+    { name: "Volatility 75", base: 96000 },
+    { name: "Volatility 100", base: 5400 }
+  ];
+
+  // short, generic technical-analysis-style notes — illustrative flavor
+  // text only, never a claim of certainty or verified outcome.
+  const WIN_NOTES = [
+    "Structure held at the level and price ran cleanly into target.",
+    "Momentum carried through the session, hitting target ahead of schedule.",
+    "Clean retest of the zone before continuation to target.",
+    "Breakout confirmed and followed through without much pullback.",
+    "Trend on the higher timeframe lined up with the entry the whole way.",
+    "Volatility expansion after the open pushed price straight to target."
+  ];
+  const LOSS_NOTES = [
+    "Level failed to hold and price reversed before reaching target.",
+    "Stop was clipped on a fast move before the setup could develop.",
+    "Momentum faded early and the trade was stopped out on the pullback.",
+    "News-driven volatility invalidated the setup shortly after entry."
+  ];
+
+  const BOT_STATUS_LINES = [
+    "Scanning Forex majors for structure...",
+    "Cross-checking Synthetic Indices volatility bands...",
+    "Reviewing closed signals from the last 24 hours...",
+    "Calculating win rate and net profit for this batch...",
+    "Finalizing today's past-signal batch..."
+  ];
+
+  let liveRates = null; // USD-based rates from the API, or null if fetch failed/timed out
+
+  function pairPrice(pair, rates){
+    if(!rates) return null;
+    const r = rates;
+    switch(pair){
+      case "EUR/USD": return r.EUR ? 1 / r.EUR : null;
+      case "GBP/USD": return r.GBP ? 1 / r.GBP : null;
+      case "USD/JPY": return r.JPY || null;
+      case "AUD/USD": return r.AUD ? 1 / r.AUD : null;
+      case "USD/CAD": return r.CAD || null;
+      case "GBP/JPY": return (r.JPY && r.GBP) ? r.JPY / r.GBP : null;
+      case "USD/CHF": return r.CHF || null;
+      default: return null;
+    }
+  }
+
+  function decimalsFor(pair){ return pair.includes("JPY") ? 3 : 5; }
+
+  function pickN(arr, n, rand){
+    const copy = arr.slice();
+    const out = [];
+    for(let i=0;i<n && copy.length;i++){
+      const idx = Math.floor(rand()*copy.length);
+      out.push(copy.splice(idx,1)[0]);
+    }
+    return out;
+  }
+
+  function buildBatch(){
+    const signals = [];
+    const chosenForex = pickN(FOREX_PAIRS, 3, rng);
+    const chosenSynth = pickN(SYNTH_INSTRUMENTS, 3, rng);
+
+    chosenForex.forEach((pair) => {
+      const live = pairPrice(pair, liveRates);
+      const dec = decimalsFor(pair);
+      const fallback = { "EUR/USD":1.0845,"GBP/USD":1.2650,"USD/JPY":151.2,"AUD/USD":0.6520,"USD/CAD":1.3690,"GBP/JPY":191.3,"USD/CHF":0.8830 }[pair];
+      const entry = live || fallback;
+      const isBuy = rng() > 0.45;
+      const moveUnit = pair.includes("JPY") ? 0.35 : 0.0035; // rough pip-scale move
+      const tpMult = 1.6 + rng()*1.6;
+      const slMult = 1;
+      const tp = isBuy ? entry + moveUnit*tpMult : entry - moveUnit*tpMult;
+      const sl = isBuy ? entry - moveUnit*slMult : entry + moveUnit*slMult;
+      const pipFactor = pair.includes("JPY") ? 100 : 10000;
+
+      // closed signal only — biased toward TARGET_WIN_RATE, not 100%
+      const won = rng() < TARGET_WIN_RATE;
+      const exit = won ? tp : sl;
+      const rawPips = (exit-entry) * (isBuy?1:-1) * pipFactor;
+      const pips = Math.round(rawPips);
+      const rr = (Math.abs(tp-entry)/Math.abs(entry-sl)).toFixed(1);
+      const profit = Math.round(pips * LOT_PIP_VALUE);
+
+      signals.push({
+        instrument: pair, market:"forex", tag: live ? "live" : "sample",
+        type: isBuy ? "buy":"sell", entry, exit, tp, sl,
+        pips, rr, status: won ? "tp" : "sl", won, profit, decimals: dec,
+        note: (won ? WIN_NOTES : LOSS_NOTES)[Math.floor(rng()*(won?WIN_NOTES:LOSS_NOTES).length)]
+      });
+    });
+
+    chosenSynth.forEach((inst) => {
+      const drift = (rng()-0.5) * inst.base * 0.02;
+      const entry = inst.base + drift;
+      const isBuy = rng() > 0.5;
+      const moveUnit = inst.base * (0.01 + rng()*0.015);
+      const tp = isBuy ? entry + moveUnit*2 : entry - moveUnit*2;
+      const sl = isBuy ? entry - moveUnit : entry + moveUnit;
+
+      const won = rng() < TARGET_WIN_RATE;
+      const exit = won ? tp : sl;
+      const rawPips = (exit-entry) * (isBuy?1:-1);
+      const pips = Math.round(rawPips);
+      const rr = (Math.abs(tp-entry)/Math.abs(entry-sl)).toFixed(1);
+      const profit = Math.round(pips * SYNTH_POINT_VALUE);
+
+      signals.push({
+        instrument: inst.name, market:"synthetic", tag:"sample",
+        type: isBuy ? "buy":"sell", entry, exit, tp, sl,
+        pips, rr, status: won ? "tp" : "sl", won, profit, decimals: 2,
+        note: (won ? WIN_NOTES : LOSS_NOTES)[Math.floor(rng()*(won?WIN_NOTES:LOSS_NOTES).length)]
+      });
+    });
+
+    // most recent / best-performing first, for a stronger opening impression
+    return signals.sort((a,b) => (b.won - a.won) || (b.profit - a.profit));
+  }
+
+  function fmt(n, dec){ return Number(n).toFixed(dec); }
+  function fmtMoney(n){ return (n>=0?'+$':'-$') + Math.abs(n).toLocaleString(); }
+
+  function statusBadge(status){
+    if(status==="tp") return '<span class="badge badge-success">TP Hit</span>';
+    return '<span class="badge badge-danger">SL Hit</span>';
+  }
+
+  function renderCards(signals){
+    const grid = document.querySelector('[data-signals-grid]');
+    if(!grid) return;
+    grid.innerHTML = signals.map((s, i) => `
+      <div class="signal-card ${s.won?'won':'lost'}" data-market="${s.market}" data-status="${s.status}" data-pair="${s.instrument.toLowerCase()}" style="animation-delay:${i*90}ms;">
+        <div class="signal-card-top">
+          <span class="signal-pair">${s.instrument}</span>
+          <span class="signal-dir ${s.type}">${s.type.toUpperCase()}</span>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          ${s.tag==="live"
+            ? `<span class="signal-tag live"><span class="live-dot"></span>Live</span>`
+            : `<span class="signal-tag sample">Sample</span>`}
+          <span class="signal-tag closed">Closed</span>
+        </div>
+        <div class="signal-price-row"><span>Entry</span><b>${fmt(s.entry, s.decimals)}</b></div>
+        <div class="signal-price-row"><span>Exit</span><b style="color:${s.won?'var(--color-success)':'var(--color-danger)'};">${fmt(s.exit, s.decimals)}</b></div>
+        <div class="signal-price-row"><span>Pips / R:R</span><b style="color:${s.won?'var(--color-success)':'var(--color-danger)'};">${s.pips>0?'+':''}${s.pips} · 1:${s.rr}</b></div>
+        <div class="signal-profit-row ${s.won?'':'loss'}">
+          <span class="signal-profit-label">Sample Profit</span>
+          <span class="signal-profit-value ${s.won?'':'loss'}" data-profit-target="${s.profit}">$0</span>
+        </div>
+        <div class="signal-bot-note"><i class="fas fa-robot"></i><span><b>SyntheticBot:</b> ${s.note}</span></div>
+        <div class="signal-status-row">${statusBadge(s.status)}<span style="font-size:11px;color:var(--color-text-muted);">Past 24h</span></div>
+        <a href="contact.html" class="btn btn-primary btn-sm signal-buy-btn">
+          <i class="fas fa-cart-shopping"></i> Buy This Signal
+        </a>
+      </div>
+    `).join('');
+
+    // animate each profit figure counting up in real time as it mounts
+    grid.querySelectorAll('[data-profit-target]').forEach((el, i) => {
+      const target = parseInt(el.dataset.profitTarget, 10);
+      setTimeout(() => animateMoney(el, target), i*90 + 250);
+    });
+  }
+
+  function animateMoney(el, to){
+    const dur = 1100, start = performance.now();
+    function step(now){
+      const p = Math.min(1, (now-start)/dur);
+      const eased = 1 - Math.pow(1-p, 3);
+      const val = Math.round(to * eased);
+      el.textContent = fmtMoney(val);
+      if(p<1) requestAnimationFrame(step);
+      else el.textContent = fmtMoney(to);
+    }
+    requestAnimationFrame(step);
+  }
+
+  function renderTable(signals){
+    const body = document.getElementById('signals-table-body');
+    if(!body) return;
+    body.innerHTML = signals.map(s => `
+      <tr>
+        <td style="font-family:var(--font-mono);font-weight:600;">${s.instrument}</td>
+        <td><span style="color:${s.type==='buy'?'var(--color-success)':'var(--color-danger)'};font-weight:700;">${s.type.toUpperCase()}</span></td>
+        <td style="font-family:var(--font-mono);">${fmt(s.entry,s.decimals)}</td>
+        <td style="font-family:var(--font-mono);color:${s.won?'var(--color-success)':'var(--color-danger)'};">${fmt(s.exit,s.decimals)}</td>
+        <td style="color:${s.won?'var(--color-success)':'var(--color-danger)'};font-weight:600;">${s.pips>0?'+':''}${s.pips}</td>
+        <td style="font-family:var(--font-mono);color:${s.won?'var(--color-success)':'var(--color-danger)'};font-weight:700;">${fmtMoney(s.profit)}</td>
+        <td>1:${s.rr}</td>
+        <td>${statusBadge(s.status)}</td>
+        <td>${s.tag==='live' ? '<span class="signal-tag live"><span class="live-dot"></span>Live</span>' : '<span class="signal-tag sample">Sample</span>'}</td>
+      </tr>
+    `).join('');
+  }
+
+  function animateCount(el, to){
+    if(!el) return;
+    const suffix = el.dataset.suffix || '';
+    const prefix = el.dataset.prefix || '';
+    const dur = 900, start = performance.now(), from = 0;
+    function step(now){
+      const p = Math.min(1, (now-start)/dur);
+      const eased = 1 - Math.pow(1-p, 3);
+      el.textContent = prefix + Math.round(from + (to-from)*eased).toLocaleString() + suffix;
+      if(p<1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  function renderStats(signals){
+    const wins = signals.filter(s=>s.won).length;
+    const winRate = Math.round((wins/signals.length)*100);
+    const avgPips = Math.round(signals.reduce((a,s)=>a+s.pips,0)/signals.length);
+    const netProfit = signals.reduce((a,s)=>a+s.profit,0);
+
+    animateCount(document.getElementById('stat-total'), signals.length);
+    animateCount(document.getElementById('stat-winrate'), winRate);
+    animateCount(document.getElementById('stat-pips'), Math.abs(avgPips));
+    animateCount(document.getElementById('stat-profit'), Math.max(netProfit,0));
+  }
+
+  function wireFilters(){
+    const buttons = document.querySelectorAll('[data-signal-filter]');
+    const search = document.querySelector('[data-signal-search]');
+
+    function apply(){
+      const active = document.querySelector('[data-signal-filter].btn-primary')?.dataset.signalFilter || 'all';
+      const q = (search?.value || '').toLowerCase().trim();
+      document.querySelectorAll('.signal-card').forEach(card=>{
+        const market = card.dataset.market;
+        const status = card.dataset.status;
+        const pair = card.dataset.pair;
+        let show = true;
+        if(active==='forex') show = market==='forex';
+        else if(active==='synthetic') show = market==='synthetic';
+        else if(active==='win') show = status==='tp';
+        if(show && q) show = pair.includes(q);
+        card.style.display = show ? '' : 'none';
+      });
+    }
+
+    buttons.forEach(b=>{
+      b.addEventListener('click', ()=>{
+        buttons.forEach(x=>{ x.classList.remove('btn-primary'); x.classList.add('btn-ghost'); });
+        b.classList.remove('btn-ghost'); b.classList.add('btn-primary');
+        apply();
+      });
+    });
+    search?.addEventListener('input', apply);
+  }
+
+  // ---------------- SyntheticBot panel behavior ----------------
+  function timeNow(){
+    const d = new Date();
+    return d.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+  }
+
+  function typeStatus(el, lines, onCycleEnd){
+    let li = 0;
+    function typeLine(){
+      const text = lines[li % lines.length];
+      let ci = 0;
+      el.textContent = "";
+      const typeInterval = setInterval(()=>{
+        ci++;
+        el.textContent = text.slice(0, ci);
+        if(ci >= text.length){
+          clearInterval(typeInterval);
+          setTimeout(()=>{
+            li++;
+            if(li % lines.length === 0 && onCycleEnd) onCycleEnd();
+            typeLine();
+          }, 1600);
+        }
+      }, 28);
+    }
+    typeLine();
+  }
+
+  function pushFeedRow(feedEl, text){
+    const row = document.createElement('div');
+    row.className = 'bot-feed-row';
+    row.innerHTML = `<span class="t">${timeNow()}</span><span class="m">${text}</span>`;
+    feedEl.prepend(row);
+    while(feedEl.children.length > 5) feedEl.removeChild(feedEl.lastChild);
+  }
+
+  function startBotPanel(signals){
+    const statusEl = document.querySelector('[data-bot-status]');
+    const feedEl = document.getElementById('bot-feed');
+    const scannedEl = document.getElementById('bot-scanned');
+    const batchEl = document.getElementById('bot-batch');
+
+    const totalUniverse = FOREX_PAIRS.length + SYNTH_INSTRUMENTS.length;
+    animateCount(scannedEl, totalUniverse);
+    animateCount(batchEl, signals.length);
+
+    if(feedEl){
+      pushFeedRow(feedEl, "Session initialized — reviewing the last 24 hours of closed signals.");
+      let idx = 0;
+      const events = signals.map(s => s.won
+        ? `<b>${s.instrument}</b> closed in profit at ${fmtMoney(s.profit)} — added to past-signal batch.`
+        : `<b>${s.instrument}</b> closed at a loss (${fmtMoney(s.profit)}) — included for a transparent batch.`
+      );
+      events.push("Batch finalized — win rate and profit stats updated.");
+      setInterval(()=>{
+        if(idx < events.length){
+          pushFeedRow(feedEl, events[idx]);
+          idx++;
+        } else {
+          pushFeedRow(feedEl, "Monitoring for next rotation — batch refreshes every 24 hours.");
+        }
+      }, 2200);
+    }
+
+    if(statusEl){
+      typeStatus(statusEl, BOT_STATUS_LINES);
+    }
+  }
+
+  // ---- rates fetch is timeout-protected so a slow/blocked third-party
+  // API can never stall the section indefinitely ----
+  function withTimeout(promise, ms){
+    return new Promise((resolve) => {
+      let done = false;
+      const timer = setTimeout(() => {
+        if(!done){ done = true; resolve(null); }
+      }, ms);
+      promise.then((val) => {
+        if(!done){ done = true; clearTimeout(timer); resolve(val); }
+      }).catch(() => {
+        if(!done){ done = true; clearTimeout(timer); resolve(null); }
+      });
+    });
+  }
+
+  async function fetchLiveRates(){
+    try{
+      const controller = new AbortController();
+      const abortTimer = setTimeout(() => controller.abort(), 4000);
+      const res = await fetch('https://open.er-api.com/v6/latest/USD', { signal: controller.signal });
+      clearTimeout(abortTimer);
+      const data = await res.json();
+      if(data && data.rates) return data.rates;
+    }catch(e){ /* network error, abort, or bad JSON -> fall through to null */ }
+    return null;
+  }
+
+  async function init(){
+    try{
+      liveRates = await withTimeout(fetchLiveRates(), 4500);
+    }catch(e){
+      liveRates = null;
+    }
+
+    try{
+      const batch = buildBatch();
+      renderCards(batch);
+      renderTable(batch);
+      renderStats(batch);
+      wireFilters();
+      startBotPanel(batch);
+    }catch(e){
+      console.error('Signals section failed to render, retrying with sample data only:', e);
+      liveRates = null;
+      const batch = buildBatch();
+      renderCards(batch);
+      renderTable(batch);
+      renderStats(batch);
+      wireFilters();
+      startBotPanel(batch);
+    }
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>

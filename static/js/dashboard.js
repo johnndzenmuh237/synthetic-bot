@@ -17,7 +17,8 @@ var SYMBOL_NAMES = {
   "R_100":"Volatility 100 Index",
   "1HZ10V":"Volatility 10 (1s) Index","1HZ25V":"Volatility 25 (1s) Index",
   "1HZ50V":"Volatility 50 (1s) Index","1HZ75V":"Volatility 75 (1s) Index",
-  "1HZ100V":"Volatility 100 (1s) Index"
+  "1HZ100V":"Volatility 100 (1s) Index",
+  "BOOM500":"Boom 500 Index","CRASH500":"Crash 500 Index"
 };
 
 // ── Mobile sidebar ───────────────────────────────────────────
@@ -37,7 +38,7 @@ var socket = io();
 
 socket.on("connect", function() {
   console.log("WS connected");
-  socket.emit("request_snapshot");   // ask server to (re)send charts/status/trades
+  socket.emit("request_snapshot");   // ask the server to (re)send charts/status/trades
 });
 
 socket.on("trade_error", function(d) { showError(d.message); });
@@ -62,7 +63,7 @@ socket.on("balance_update", function(d) {
 
 socket.on("candles_init", function(d) {
   // The server only sends candles for the symbol the bot is actually running,
-  // so adopt it instead of dropping data when the page default differs.
+  // so adopt it instead of silently dropping data when the page default differs.
   if (d.symbol !== state.symbol) setSymbolUI(d.symbol);
   state.candles[d.tf] = d.candles;
   initChart(d.tf, d.candles);
@@ -162,7 +163,7 @@ function updateTotalRisk() {
   var pos   = state.maxPositions || 1;
   var total = Math.round(lot * pos * 100) / 100;
   document.getElementById("total-risk-label").textContent =
-    "Total per signal: $" + lot.toFixed(2) + " × " + pos + " = $" + total.toFixed(2);
+    "Max exposure: $" + lot.toFixed(2) + " × " + pos + " open trade(s) = $" + total.toFixed(2);
 }
 
 // ── Update while running ─────────────────────────────────────
@@ -181,8 +182,8 @@ function updateSettings() {
 }
 
 // ── Charts ───────────────────────────────────────────────────
-// One pane per timeframe (M1 / M5) inside #chart-container. Only the active
-// pane is visible. Lines drawn: EMA10 (red) and EMA20 (purple) = the strategy EMAs.
+// One pane per timeframe (M1 / M5) inside #chart-container; only the active pane
+// is visible. Lines drawn: EMA10 (red) and EMA20 (purple) = the strategy EMAs.
 var EMA_FAST = 10, EMA_SLOW = 20;
 
 function initChart(tf, candles) {
@@ -213,8 +214,12 @@ function initChart(tf, candles) {
     var eSlow = chart.addLineSeries({ color: "#a855f7", lineWidth: 1, title: "EMA" + EMA_SLOW });
     state.charts[tf] = { chart: chart, cs: cs, eFast: eFast, eSlow: eSlow };
 
-    new ResizeObserver(function() { sizeChart(tf); })
-      .observe(document.getElementById("chart-container"));
+    if (!state.resizeObs && window.ResizeObserver) {
+      state.resizeObs = new ResizeObserver(function() {
+        Object.keys(state.charts).forEach(sizeChart);
+      });
+      state.resizeObs.observe(box);
+    }
   }
   populateChart(tf, candles);
 }
@@ -463,7 +468,6 @@ function toggleBot() {
 }
 
 // ── Init ─────────────────────────────────────────────────────
-// Sync state with the pair button the page highlights by default
 (function() {
   var b = document.querySelector(".pair-btn.active");
   if (b) {

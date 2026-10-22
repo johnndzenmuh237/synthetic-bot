@@ -1,13 +1,13 @@
 """
 bot_engine.py — Core trading engine per user session (simplified EMA-cross version)
 
-What changed vs the old version (these were the reasons nothing traded / no charts):
-  * Candles are keyed by Deriv's `open_time` (candle start). The old code keyed them
-    by the tick `epoch`, which changes on EVERY tick, so every tick was stored as a
-    new "closed candle". That corrupted the EMAs and triggered a strategy run per tick.
+What was wrong in the old version (why nothing traded / no charts):
+  * Candles were keyed by the tick `epoch`, which changes on EVERY tick, so every tick
+    was stored as a new "closed candle". That corrupted the EMAs and ran the strategy per tick.
+    Now candles are keyed by Deriv's `open_time` (candle start).
   * Strategy runs only on CLOSED M1 candles (the forming candle is never used).
-  * One trade per signal. The old code needed 2 free slots per signal while the
-    dashboard default was 1 position -> it returned before even looking for a signal.
+  * One trade per signal. The old code needed 2 free slots per signal while the dashboard
+    default is 1 position -> it returned before even looking for a signal.
   * Demo mode now places real contracts on the Deriv DEMO account (config.SIMULATE_DEMO).
   * Trades are settled from Deriv's real contract result when the contract expires.
   * Chart snapshot can be re-sent any time (page reload, reconnect, server restart).
@@ -103,12 +103,13 @@ class BotSession:
             asyncio.set_event_loop(self.loop)
             try:
                 self.loop.run_until_complete(self._main())
+                backoff = 5
             except ConnectionError as e:
                 log.error("Connection error: %s", e)
                 self._emit_status("error", str(e))
             except Exception as e:
                 detail = str(e) or repr(e) or type(e).__name__
-                log.error("Bot session error: %s", detail)
+                log.error("Bot session error: %s", detail, exc_info=True)
                 self._emit_status("error", "Bot error: {}".format(detail))
             finally:
                 try:
@@ -172,6 +173,8 @@ class BotSession:
             await asyncio.sleep(10)
             if not self.running:
                 break
+            if not self.broker.connected and not self.broker._reconnecting and not self.broker._closing:
+                raise ConnectionError("Deriv connection lost")
             now = time.time()
             try:
                 if now - self._last_tick > STREAM_STALE_SEC:
@@ -239,26 +242,30 @@ class BotSession:
 
     def _on_candle_tick(self, ohlc):
         """Called for every live `ohlc` message from Deriv (runs on the bot's event loop)."""
-        symbol = ohlc.get("symbol") or ohlc.get("underlying") or self.symbol
-        if symbol != self.symbol:
-            return
-        self._last_tick = time.time()
+        try:
+            symbol = (ohlc.get("symbol") or ohlc.get("underlying_symbol")
+                      or ohlc.get("underlying") or self.symbol)
+            if symbol != self.symbol:
+                return
+            self._last_tick = time.time()
 
-        gran = int(ohlc.get("granularity", TIMEFRAMES[EXECUTION_TF]))
-        tf   = next((k for k, v in TIMEFRAMES.items() if v == gran), None)
-        if tf is None:
-            return
-        # Candle id = candle OPEN time (NOT the tick epoch, which changes every tick)
-        open_time = ohlc.get("open_time")
-        if open_time is None:
-            open_time = (int(ohlc["epoch"]) // gran) * gran
-        c = self._clean(ohlc, epoch=open_time)
+            gran = int(ohlc.get("granularity", TIMEFRAMES[EXECUTION_TF]))
+            tf   = next((k for k, v in TIMEFRAMES.items() if v == gran), None)
+            if tf is None:
+                return
+            # Candle id = candle OPEN time (NOT the tick epoch, which changes every tick)
+            open_time = ohlc.get("open_time")
+            if open_time is None:
+                open_time = (int(ohlc["epoch"]) // gran) * gran
+            c = self._clean(ohlc, epoch=open_time)
 
-        is_new = self._ingest(tf, c)
-        self._emit_candle_update(tf, c)
+            is_new = self._ingest(tf, c)
+            self._emit_candle_update(tf, c)
 
-        if is_new and tf == EXECUTION_TF:
-            asyncio.ensure_future(self._evaluate())
+            if is_new and tf == EXECUTION_TF:
+                asyncio.ensure_future(self._evaluate())
+        except Exception as e:
+            log.error("Candle tick error: %s", e)
 
     async def _poll_candles(self):
         """Fallback if the live stream is silent: pull the latest candles directly."""
@@ -373,7 +380,7 @@ class BotSession:
                 pnl = round(stake * SIM_PAYOUT, 2) if win else -stake
             elif cid:
                 info = await self.broker.get_contract(cid)
-                if info and info.get("is_sold"):
+                if info and (info.get("is_sold") or info.get("status") in ("won", "lost")):
                     pnl = float(info.get("profit", 0))
                     exit_p = float(info.get("sell_spot") or info.get("exit_tick") or entry)
 
@@ -427,7 +434,9 @@ class BotSession:
                 c = list(self.candles.get(tf, []))
                 if c:
                     self._emit_candles(tf, c[-200:])
-            self._emit_analysis(self._df("M5"), self._df("M1"))
+            m1, m5 = self._df("M1"), self._df("M5")
+            if m1 is not None:
+                self._emit_analysis(m5, m1)
             self._emit_trade_update()
         except Exception as e:
             log.error("Snapshot error: %s", e)

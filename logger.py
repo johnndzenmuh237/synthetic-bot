@@ -1,9 +1,17 @@
 """logger.py — Coloured console + rotating file logger"""
-import logging, os
+import logging, os, sys
 from logging.handlers import RotatingFileHandler
 from config import LOG_FILE, LOG_LEVEL
 
 os.makedirs("logs", exist_ok=True)
+
+# Windows consoles default to cp1252 and choke on symbols like "→" and "✅".
+# Force UTF-8 (replacing anything unprintable) so logging never errors out.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 try:
     import colorlog
@@ -31,7 +39,7 @@ def get_logger(name="SyntheticBot"):
         ch.setFormatter(logging.Formatter(
             "%(asctime)s [%(levelname)-8s] %(message)s", "%H:%M:%S"))
 
-    fh = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=3)
+    fh = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
     fh.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)-8s] %(message)s", "%Y-%m-%d %H:%M:%S"))
 

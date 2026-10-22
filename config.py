@@ -132,7 +132,7 @@ LOT_MAX    = 100.0
 LOT_TO_USD = 1.0
 
 # ── Strategy selection (SIMPLIFIED) ──────────────────────────
-# "EMA_CROSS" = one rule only: EMA10 crosses EMA20 on a CLOSED M1 candle.
+# ONE rule only: EMA10 crosses EMA20 on a CLOSED M1 candle.
 #   BUY (CALL) when EMA10 crosses above EMA20, SELL (PUT) when it crosses below.
 # USE_M5_FILTER: only take the cross if the M5 EMA10/EMA20 agree with it.
 #   Set to False if you want the maximum number of trades.
@@ -140,7 +140,7 @@ STRATEGY_MODE = "EMA_CROSS"
 USE_M5_FILTER = True
 
 # False = demo mode places REAL contracts on your Deriv DEMO account
-#         (they show up in Deriv back office, virtual money).
+#         (they show up in the Deriv back office, virtual money).
 # True  = old behaviour: demo trades are only simulated inside the bot.
 SIMULATE_DEMO = False
 SIM_PAYOUT    = 0.95   # only used when SIMULATE_DEMO=True

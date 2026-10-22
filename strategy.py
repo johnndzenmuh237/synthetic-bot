@@ -8,7 +8,7 @@ Optional M5 filter (config.USE_M5_FILTER): the M5 EMA10/EMA20 must point
 the same way as the M1 cross.
 
 The old multi-condition ClaudeFX pullback/structure logic is still in
-indicators.py (unused) — it required ~7 conditions to line up at once,
+indicators.py (unused) — it needed ~7 conditions to line up at once,
 which almost never happens on synthetic indices.
 """
 from dataclasses import dataclass

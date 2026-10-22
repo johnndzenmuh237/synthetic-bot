@@ -31,7 +31,8 @@ class DerivBroker:
         self._subscriptions = set()   # {(symbol, tf_key), ...} — resubscribed after a reconnect
         self._reconnecting  = False
         self._closing        = False  # True once disconnect() is called, stops auto-reconnect
-        self.last_error      = ""     # human-readable reason of the last failed trade
+        self.last_error      = ""     # human-readable reason the last trade failed
+        self._sym_key        = "underlying_symbol"  # new Deriv API name; falls back to "symbol"
 
     def _next_id(self):
         self._req_id += 1
@@ -290,53 +291,84 @@ class DerivBroker:
             log.error("get_balance error: %s", e)
         return self.balance
 
-    async def place_trade(self, symbol, direction, stake):
-        self.last_error = ""
-        ctype = "CALL" if direction == "BUY" else "PUT"
-
-        # Get proposal
-        try:
-            prop = await self._send({
+    async def _proposal(self, symbol, ctype, stake):
+        """Deriv's NEW API calls the instrument field `underlying_symbol`; the old
+        one called it `symbol`. Try the new name first, fall back to the old one
+        if Deriv rejects it, and remember whichever works."""
+        last_exc = None
+        for key in (self._sym_key, "symbol" if self._sym_key != "symbol" else "underlying_symbol"):
+            payload = {
                 "proposal":      1,
                 "amount":        stake,
                 "basis":         "stake",
                 "contract_type": ctype,
                 "currency":      self.currency,
-                "symbol":        symbol,
+                key:             symbol,
                 "duration":      DURATION,
                 "duration_unit": DURATION_UNIT,
-            }, timeout=15)
-        except Exception as e:
-            self.last_error = "Proposal failed: {}".format(e)
-            log.error("Proposal error: %s", e)
-            return {}
+            }
+            try:
+                prop = await self._send(payload, timeout=15)
+                self._sym_key = key
+                return prop
+            except ConnectionError:
+                raise
+            except Exception as e:
+                last_exc = e
+                msg = str(e).lower()
+                # only retry with the other field name when the complaint is about the field itself
+                if not any(w in msg for w in ("symbol", "underlying", "unrecognised", "unrecognized",
+                                              "additional", "properties", "schema", "required")):
+                    raise
+                log.warning("Proposal with '%s' rejected (%s) — trying the other field name", key, e)
+        raise last_exc
 
-        if "error" in prop:
-            self.last_error = "Proposal rejected: {}".format(prop["error"]["message"])
-            log.error("Proposal rejected [%s %s $%.2f]: %s",
-                      direction, symbol, stake, prop["error"]["message"])
-            return {}
+    async def place_trade(self, symbol, direction, stake):
+        self.last_error = ""
+        ctype = "CALL" if direction == "BUY" else "PUT"
 
-        # Buy
         try:
-            buy = await self._send({
-                "buy":   prop["proposal"]["id"],
-                "price": stake,
-            }, timeout=15)
+            prop = await self._proposal(symbol, ctype, stake)
         except Exception as e:
-            self.last_error = "Buy failed: {}".format(e)
-            log.error("Buy error: %s", e)
+            self.last_error = "Proposal rejected: {}".format(e)
+            log.error("Proposal rejected [%s %s $%.2f]: %s", direction, symbol, stake, e)
             return {}
 
-        if "error" in buy:
-            self.last_error = "Buy rejected: {}".format(buy["error"]["message"])
-            log.error("Buy rejected: %s", buy["error"]["message"])
+        pid = (prop.get("proposal") or {}).get("id")
+        if not pid:
+            self.last_error = "Proposal returned no id: {}".format(str(prop)[:200])
+            log.error(self.last_error)
+            return {}
+        ask = (prop.get("proposal") or {}).get("ask_price", stake)
+
+        try:
+            buy = await self._send({"buy": pid, "price": max(float(ask or stake), float(stake))},
+                                   timeout=15)
+        except Exception as e:
+            self.last_error = "Buy rejected: {}".format(e)
+            log.error("Buy rejected: %s", e)
             return {}
 
-        contract = buy["buy"]
+        contract = buy.get("buy") or {}
+        if not contract.get("contract_id"):
+            self.last_error = "Buy returned no contract: {}".format(str(buy)[:200])
+            log.error(self.last_error)
+            return {}
         log.info("✅ TRADE OPENED | %s %s | Contract=%s | Stake=$%.2f",
                  direction, symbol, contract["contract_id"], stake)
         return contract
+
+    async def get_contract(self, contract_id):
+        """Status of a contract: is_sold, profit, status ('won'/'lost'/'open')..."""
+        try:
+            resp = await self._send({
+                "proposal_open_contract": 1,
+                "contract_id": int(contract_id),
+            }, timeout=15)
+        except Exception as e:
+            log.error("get_contract error [%s]: %s", contract_id, e)
+            return {}
+        return resp.get("proposal_open_contract", {}) or {}
 
     async def close_trade(self, contract_id):
         try:
@@ -349,15 +381,3 @@ class DerivBroker:
             return {}
         log.info("🔒 TRADE CLOSED | Contract=%s", contract_id)
         return resp.get("sell", {})
-
-    async def get_contract(self, contract_id):
-        """Status of a contract: is_sold, profit, status ('won'/'lost'/'open'), sell_spot..."""
-        try:
-            resp = await self._send({
-                "proposal_open_contract": 1,
-                "contract_id": int(contract_id),
-            }, timeout=15)
-        except Exception as e:
-            log.error("get_contract error [%s]: %s", contract_id, e)
-            return {}
-        return resp.get("proposal_open_contract", {}) or {}

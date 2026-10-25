@@ -680,3 +680,22 @@ html,body{
 .modal-actions{display:flex;gap:8px;margin-top:12px}
 .modal-actions button{flex:1;margin-top:0}
 .balance-math{font-family:var(--mono);font-size:11px;color:var(--t2);margin-top:4px}
+
+/* ── Open positions list + timeframe ── */
+.sub-label{margin-top:8px}
+.positions-panel{margin:0 18px 12px;background:var(--card);border:1px solid var(--b1);border-radius:var(--r);padding:12px}
+.panel-sub{font-weight:400;color:var(--t2);font-size:12px;margin-left:6px}
+.positions-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.pos-row{display:grid;grid-template-columns:90px 70px 1fr 70px 80px;gap:8px;align-items:center;
+  background:var(--input);border:1px solid var(--b1);border-radius:var(--rs);padding:7px 10px;font-size:12px}
+.pos-row.empty{opacity:.6;grid-template-columns:90px 1fr 80px}
+.pos-n{font-weight:600}
+.pos-dir.buy{color:var(--green)}.pos-dir.sell{color:var(--red)}
+.pos-state{color:var(--t2)}
+.pos-pl{font-family:var(--mono);text-align:right}
+.pos-pl.green{color:var(--green)}.pos-pl.red{color:var(--red)}
+@media (max-width:640px){
+  .positions-panel{margin:0 8px 8px}
+  .pos-row{grid-template-columns:70px 60px 1fr 70px;font-size:11px}
+  .pos-row .pos-stake{display:none}
+}

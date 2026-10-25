@@ -1,8 +1,43 @@
 {% extends "base.html" %}
 {% block title %}Dashboard — SyntheticBot Pro{% endblock %}
 {% block head %}
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.js"></script>
+<script>
+/* Loads socket.io + the chart library. If one source is blocked, the next is tried
+   (a local copy in static/vendor/ is tried first when you add one). dashboard.js starts
+   afterwards and shows a clear message if a library could not be loaded at all. */
+(function () {
+  var V = "{{ url_for('static', filename='vendor/') }}";
+  var LIBS = [
+    { test: function () { return typeof io !== "undefined"; }, urls: [
+        V + "socket.io.min.js",
+        "https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js",
+        "https://cdn.jsdelivr.net/npm/socket.io-client@4.7.2/dist/socket.io.min.js",
+        "https://unpkg.com/socket.io-client@4.7.2/dist/socket.io.min.js"] },
+    { test: function () { return typeof LightweightCharts !== "undefined"; }, urls: [
+        V + "lightweight-charts.standalone.production.js",
+        "https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.js",
+        "https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js",
+        "https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"] }
+  ];
+  window.__libStatus = {};
+  function loadOne(lib, done) {
+    var i = 0;
+    (function next() {
+      if (lib.test()) { done(true); return; }
+      if (i >= lib.urls.length) { done(false); return; }
+      var s = document.createElement("script");
+      s.src = lib.urls[i++]; s.onload = next; s.onerror = next;
+      document.head.appendChild(s);
+    })();
+  }
+  window.__loadLibs = function (cb) {
+    var left = LIBS.length;
+    LIBS.forEach(function (lib, n) {
+      loadOne(lib, function (ok) { window.__libStatus[n === 0 ? "socket" : "charts"] = ok; if (--left === 0) cb(); });
+    });
+  };
+})();
+</script>
 {% endblock %}
 {% macro ico(name, cls='') %}<svg class="icon {{ cls }}" aria-hidden="true"><use href="#i-{{ name }}"/></svg>{% endmacro %}
 {% block body %}
@@ -99,6 +134,12 @@
       <select id="strategy-select" class="select" onchange="onSettingChanged()" aria-label="Strategy">
         {% for key, name in strategies.items() %}
         <option value="{{ key }}" {% if settings.strategy == key %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+      <div class="section-label sub-label">Timeframe the strategy follows</div>
+      <select id="timeframe-select" class="select" onchange="onTimeframeChange()" aria-label="Timeframe">
+        {% for key, name in timeframes.items() %}
+        <option value="{{ key }}" {% if settings.timeframe == key %}selected{% endif %}>{{ name }} ({{ key }})</option>
         {% endfor %}
       </select>
       <select id="loss-policy-select" class="select" onchange="onSettingChanged()" aria-label="Losing trade policy">
@@ -235,7 +276,7 @@
         <div class="chart-pane" id="chart-M5"></div>
         <div class="chart-placeholder" id="chart-placeholder">
           <div class="placeholder-icon">{{ ico('chart') }}</div>
-          <div>Activate the bot to load live charts</div>
+          <div id="chart-message">Activate the bot to load live charts</div>
         </div>
       </div>
       <div class="chart-legend">
@@ -271,7 +312,6 @@
       <div class="info-card">
         <div class="info-card-title" id="strategy-title">Strategy</div>
         <div class="exec-rules" id="exec-rules">
-          <div class="exec-rule">{{ ico('clock') }} Entries on closed 1-minute candles</div>
           <div class="exec-rule">{{ ico('shield') }} Position cap and risk limits enforced</div>
           <div class="exec-rule" id="exec-status">{{ ico('clock') }} Bot not running</div>
         </div>
@@ -285,6 +325,15 @@
           <div class="stat-item"><span class="stat-val red" id="stat-losses">0</span><span class="stat-lbl">Losses</span></div>
           <div class="stat-item"><span class="stat-val" id="stat-pnl">$0</span><span class="stat-lbl">Realized P&amp;L</span></div>
         </div>
+      </div>
+    </div>
+
+    <!-- Open positions (each one monitored on its own) -->
+    <div class="positions-panel">
+      <div class="panel-title">{{ ico('target') }} Open Positions
+        <span class="panel-sub" id="positions-summary"></span></div>
+      <div class="positions-list" id="positions-list">
+        <div class="empty-feed">Positions appear here when the bot opens trades...</div>
       </div>
     </div>
 
@@ -318,5 +367,11 @@
 </script>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script>
+  window.__loadLibs(function () {
+    var s = document.createElement("script");
+    s.src = "{{ url_for('static', filename='js/dashboard.js') }}";
+    document.body.appendChild(s);
+  });
+</script>
 {% endblock %}

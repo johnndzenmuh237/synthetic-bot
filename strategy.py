@@ -26,7 +26,7 @@ from indicators import compute_emas, compute_rsi
 from config import (
     REV_FAST_EMA, REV_SLOW_EMA, REV_RSI_PERIOD, REV_RSI_LEVEL, REV_USE_M5_FILTER,
     MAX_SIGNAL_AGE_SEC, EMA_TREND_FAST, EMA_TREND_SLOW, USE_M5_FILTER,
-    DAILY_RESET_START_UTC, DAILY_RESET_END_UTC, TIMEFRAMES, STRATEGIES,
+    DAILY_RESET_START_UTC, DAILY_RESET_END_UTC, TIMEFRAMES, STRATEGIES, CF_CONFIRM_SEC,
 )
 from logger import log
 
@@ -45,6 +45,14 @@ class Signal:
 
 # ── Strategy metadata (drives chart lines, dashboard labels) ──
 def strategy_info(name):
+    if name == "CANDLE_FOLLOW":
+        return {"name": name, "title": STRATEGIES.get(name, name),
+                "fast": REV_FAST_EMA, "slow": REV_SLOW_EMA, "rsi": None,   # chart guide lines only
+                "labels": {"a": "Open", "b": "Price", "c": "Band"},
+                "rules": ["Follows the live candle of the selected timeframe",
+                          "Entry only after the direction holds {:g}s".format(CF_CONFIRM_SEC),
+                          "Exit immediately when the candle turns against the trade",
+                          "Opposite entry only after its own confirmation"]}
     if name == "EMA_CROSS":
         return {"name": name, "title": STRATEGIES.get(name, name),
                 "fast": EMA_TREND_FAST, "slow": EMA_TREND_SLOW, "rsi": None,
@@ -165,6 +173,8 @@ def _evaluate_cross(m5_df, m1_df, symbol):
 def evaluate(m5_df, m1_df, symbol, strategy="REVERSAL_SCALPER", now=None) -> Optional[Signal]:
     """Return a Signal for the last closed M1 candle, or None.
     Stale data and the daily-reset window never produce a signal."""
+    if strategy == "CANDLE_FOLLOW":
+        return None            # decided live, tick by tick, in bot_engine (candle_follow.py)
     if _in_daily_reset_window():
         return None
     if not candle_is_fresh(m1_df, now):

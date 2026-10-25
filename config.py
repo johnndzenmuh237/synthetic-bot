@@ -138,10 +138,21 @@ LOT_TO_USD = 1.0
 
 # ── Strategies (the user picks one on the dashboard) ─────────
 STRATEGIES = {
+    "CANDLE_FOLLOW":    "Candle Follow (live candle direction)",
     "REVERSAL_SCALPER": "Reversal Scalper (EMA5/13 + RSI7)",
     "EMA_CROSS":        "EMA Cross (EMA10/20)",
 }
-DEFAULT_STRATEGY = "REVERSAL_SCALPER"
+DEFAULT_STRATEGY = "CANDLE_FOLLOW"
+
+# Candle Follow — starting points, NOT proven settings (see candle_follow.py).
+CF_CONFIRM_SEC     = float(os.getenv("CF_CONFIRM_SEC", 5))      # seconds a direction must hold before an entry
+CF_BAND_FRAC       = float(os.getenv("CF_BAND_FRAC", 0.10))     # dead-band = this x average recent candle range
+CF_PROTECT_PROFIT  = os.getenv("CF_PROTECT_PROFIT", "true").lower() == "true"  # close a trade that was in profit before it turns negative
+CF_ENTRY_RETRY_SEC = float(os.getenv("CF_ENTRY_RETRY_SEC", 15)) # pause after a refused/failed order before trying again
+CF_MAX_TICK_AGE    = float(os.getenv("CF_MAX_TICK_AGE", 10))    # no entries if the last price update is older than this
+POSITION_POLL_SEC  = float(os.getenv("POSITION_POLL_SEC", 3))   # how often open positions are re-priced
+TIMEFRAME_CHOICES  = {"M1": "1 minute", "M5": "5 minutes"}
+DEFAULT_TIMEFRAME  = "M1"
 
 # Reversal Scalper — starting points for testing (NOT verified settings of any
 # reference bot). Override with environment variables if you want to experiment.

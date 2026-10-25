@@ -30,7 +30,9 @@ from collections import defaultdict
 from typing import Dict, List
 
 from broker import DerivBroker, OrderStatusUnknown
-from strategy import evaluate, ema_direction, prepare, strategy_info
+from strategy import evaluate, ema_direction, prepare, strategy_info, _in_daily_reset_window
+from candle_follow import band_size, zone_of, DirectionTracker, exits_for, profit_turned_negative
+from strategy import Signal
 from risk_manager import RiskManager
 from database import (
     save_candle, save_signal,
@@ -42,6 +44,8 @@ from database import (
 from config import (
     EXECUTION_TF, ANALYSIS_TF, TIMEFRAMES, DURATION, DURATION_UNIT,
     DEFAULT_STRATEGY, DEFAULT_LOSS_POLICY, ALLOW_HEDGE, MAX_OPEN_TRADES,
+    CF_CONFIRM_SEC, CF_BAND_FRAC, CF_PROTECT_PROFIT, CF_ENTRY_RETRY_SEC, CF_MAX_TICK_AGE,
+    POSITION_POLL_SEC, DEFAULT_TIMEFRAME,
 )
 from logger import log
 
@@ -78,7 +82,7 @@ class BotSession:
     def __init__(self, user_id, symbol, mode, emit_fn,
                  lot_size=1.0, max_positions=1,
                  strategy=DEFAULT_STRATEGY, loss_policy=DEFAULT_LOSS_POLICY,
-                 close_on_stop=False, account_id=""):
+                 close_on_stop=False, account_id="", timeframe=DEFAULT_TIMEFRAME):
         self.user_id       = user_id
         self.symbol        = symbol
         self.mode          = mode           # "demo" or "live"
@@ -90,6 +94,18 @@ class BotSession:
         self.close_on_stop = bool(close_on_stop)
         self.account_pref  = account_id or ""
         self.info          = strategy_info(strategy)
+        self.timeframe     = timeframe if timeframe in ("M1", "M5") else "M1"
+        # Candle Follow state (all per-bot, per-position)
+        self.tracker       = DirectionTracker(CF_CONFIRM_SEC)
+        self.pnl_now       = {}      # trade id -> live profit reported by Deriv
+        self.pnl_peak      = {}      # trade id -> best profit seen while open
+        self._selling      = set()   # trade ids with a sell in flight (no double sells)
+        self._sell_block   = {}      # trade id -> (retry_at, failures)
+        self._entry_block_until = 0.0
+        self._follow_busy  = False
+        self._follow_dirty = False
+        self._last_follow_emit = 0.0
+        self._pos_task     = None
 
         self.running       = False
         self._stop_requested = False
@@ -130,7 +146,7 @@ class BotSession:
         return {"symbol": self.symbol, "mode": self.mode, "lot_size": self.lot_size,
                 "max_positions": self.max_positions, "strategy": self.strategy,
                 "loss_policy": self.loss_policy, "close_on_stop": self.close_on_stop,
-                "account_id": self.account_pref}
+                "account_id": self.account_pref, "timeframe": self.timeframe}
 
     def status_dict(self):
         """The REAL state of the worker (never claims 'running' unless it is)."""
@@ -190,7 +206,8 @@ class BotSession:
             self._set_state("stopped", "Bot stopped")
         log.info("Bot stopped | user=%s symbol=%s", self.user_id, self.symbol)
 
-    def update_settings(self, lot_size=None, max_positions=None, loss_policy=None, close_on_stop=None):
+    def update_settings(self, lot_size=None, max_positions=None, loss_policy=None, close_on_stop=None,
+                        timeframe=None):
         """Apply validated changes to the RUNNING bot; used for the next order onwards."""
         if lot_size is not None:
             self.lot_size = float(lot_size)
@@ -200,6 +217,10 @@ class BotSession:
             self.loss_policy = loss_policy
         if close_on_stop is not None:
             self.close_on_stop = bool(close_on_stop)
+        if timeframe in ("M1", "M5") and timeframe != self.timeframe:
+            self.timeframe = timeframe
+            self.tracker.reset()               # a new timeframe needs its own confirmation
+            log.info("Timeframe changed to %s", timeframe)
         if self.risk:
             self.risk.update_settings(lot_size, max_positions)
         log.info("Settings applied | stake=%.2f maxpos=%d loss_policy=%s close_on_stop=%s",
@@ -285,27 +306,36 @@ class BotSession:
 
         self._set_state("running", self._running_message())
         self._emit_trade_update()
+        self._emit_positions()
         await self._evaluate()
+        self._pos_task = asyncio.ensure_future(self._positions_loop())
+        if self.strategy == "CANDLE_FOLLOW":
+            self._schedule_follow()
 
         last_slow = time.time()
-        while self.running and not self._stop_requested:
-            for _ in range(10):
+        try:
+            while self.running and not self._stop_requested:
+                for _ in range(10):
+                    if not self.running or self._stop_requested:
+                        break
+                    await asyncio.sleep(1)
                 if not self.running or self._stop_requested:
                     break
-                await asyncio.sleep(1)
-            if not self.running or self._stop_requested:
-                break
-            try:
-                await self._housekeeping(last_slow)
-                if time.time() - last_slow >= SLOW_EVERY_SEC:
-                    last_slow = time.time()
-            except Exception as e:
-                log.error("Housekeeping error: %s", e)
+                try:
+                    await self._housekeeping(last_slow)
+                    if time.time() - last_slow >= SLOW_EVERY_SEC:
+                        last_slow = time.time()
+                except Exception as e:
+                    log.error("Housekeeping error: %s", e)
+        finally:
+            if self._pos_task is not None:
+                self._pos_task.cancel()
+                self._pos_task = None
 
     def _running_message(self):
-        return "Bot running | {} | {} {} | {} | Stake {:.2f} | Max open {}".format(
+        return "Bot running | {} | {} {} | {} | {} | Stake {:.2f} | Max open {}".format(
             self.symbol, self.mode.upper(), self.broker.account_id,
-            self.info["title"], self.lot_size, self.max_positions)
+            self.info["title"], self.timeframe, self.lot_size, self.max_positions)
 
     async def _housekeeping(self, last_slow):
         now = time.time()
@@ -417,7 +447,10 @@ class BotSession:
             is_new = self._ingest(tf, c)
             self._emit_candle_update(tf, c)
 
-            if is_new and tf == EXECUTION_TF:
+            if self.strategy == "CANDLE_FOLLOW":
+                if tf == self.timeframe:
+                    self._schedule_follow()          # every price update, in real time
+            elif is_new and tf == EXECUTION_TF:
                 asyncio.ensure_future(self._evaluate())
         except Exception as e:
             log.error("Candle tick error: %s", e)
@@ -434,7 +467,9 @@ class BotSession:
             if raw:
                 self._emit_candle_update(tf, self.candles[tf][-1])
                 self._last_tick = time.time()
-        if new_m1:
+        if self.strategy == "CANDLE_FOLLOW":
+            self._schedule_follow()
+        elif new_m1:
             await self._evaluate()
 
     def _df(self, tf):
@@ -453,6 +488,8 @@ class BotSession:
             log.error("Evaluate error: %s", e, exc_info=True)
 
     async def _evaluate_locked(self):
+        if self.strategy == "CANDLE_FOLLOW":
+            return                                   # handled live by _follow_step
         m1 = self._df("M1")
         m5 = self._df("M5")
         if m1 is None:
@@ -527,7 +564,7 @@ class BotSession:
         tid = open_trade(
             user_id=self.user_id, symbol=self.symbol, direction=signal.direction,
             lot_size=self.lot_size, stake=stake, entry=signal.close_price, sl=0, tp=0,
-            contract_id="", mode=self.mode, position_num=1,
+            contract_id="", mode=self.mode, position_num=self._free_slot(),
             trade_group=uuid.uuid4().hex[:12], target_price=0, r_distance=0,
             status="PENDING", account_id=self.broker.account_id, strategy=signal.strategy)
         try:
@@ -582,13 +619,15 @@ class BotSession:
                 log.info("Reversal signal while trade #%s is losing (%.2f): holding to expiry (policy: hold)",
                          t["id"], profit)
 
-    async def _sell_position(self, t, reason):
-        """Sell at market, then record ONLY Deriv's confirmed result."""
+    async def _sell_position(self, t, reason, fast=False):
+        """Sell at market, then record ONLY Deriv's confirmed result.
+        fast=True skips the pre-check so a reversal exit is sent without delay."""
         cid = str(t["contract_id"])
-        info = await self.broker.get_contract(cid)
-        if info and "is_valid_to_sell" in info and not info.get("is_valid_to_sell"):
-            log.info("Trade #%s cannot be sold early — it will run to expiry", t["id"])
-            return False
+        if not fast:
+            info = await self.broker.get_contract(cid)
+            if info and "is_valid_to_sell" in info and not info.get("is_valid_to_sell"):
+                log.info("Trade #%s cannot be sold early — it will run to expiry", t["id"])
+                return False
         sold = await self.broker.close_trade(cid)
         if not sold:
             self._emit("trade_error", {"message": "Could not close trade #{}: {}".format(
@@ -628,6 +667,222 @@ class BotSession:
         async with self._lock:
             await self._reconcile_trades()
 
+    # ── Candle Follow: live direction, immediate exits, confirmed entries ──
+    def _schedule_follow(self):
+        """Run one evaluation now; if prices arrive meanwhile, run once more afterwards."""
+        if self._follow_busy:
+            self._follow_dirty = True
+            return
+        self._follow_busy = True
+        asyncio.ensure_future(self._follow_runner())
+
+    async def _follow_runner(self):
+        try:
+            while True:
+                self._follow_dirty = False
+                try:
+                    await self._follow_step()
+                except Exception as e:
+                    log.error("Candle Follow error: %s", e, exc_info=True)
+                if not self._follow_dirty:
+                    break
+        finally:
+            self._follow_busy = False
+
+    def _follow_view(self, tf):
+        """(zone, open, price, band) of the forming candle on `tf`, or None."""
+        store = self.candles.get(tf, [])
+        if len(store) < 6:
+            return None
+        cur, closed = store[-1], store[:-1]
+        band = band_size(closed, CF_BAND_FRAC)
+        return zone_of(cur["close"], cur["open"], band), cur["open"], cur["close"], band
+
+    async def _follow_step(self):
+        if self._stop_requested or not self.running:
+            return
+        view = self._follow_view(self.timeframe)
+        if view is None:
+            return
+        zone, opn, price, band = view
+        now = time.time()
+        zone, confirmed, held = self.tracker.update(now, zone)
+        self._emit_follow_analysis(now)
+
+        # 1) EXIT FIRST, immediately, every position on its own.
+        await self._follow_exits(zone)
+
+        # 2) ENTRY only after the direction has been confirmed.
+        if confirmed:
+            await self._follow_entries(zone, price, opn, band, held)
+
+    async def _follow_exits(self, zone):
+        now = time.time()
+        open_trades = [t for t in get_open_trades(self.user_id, self.mode) if t["symbol"] == self.symbol]
+        todo = [(t, "Closed at once: candle turned {} against this {}".format(
+            "bearish" if t["direction"] == "BUY" else "bullish", t["direction"]))
+            for t in exits_for(zone, open_trades)]
+        if CF_PROTECT_PROFIT:
+            ids = {t["id"] for t, _ in todo}
+            for t in open_trades:
+                if t["id"] in ids:
+                    continue
+                if profit_turned_negative(self.pnl_peak.get(t["id"], 0.0), self.pnl_now.get(t["id"], 0.0)):
+                    todo.append((t, "Profit protection: this {} was in profit and was turning into a loss".format(t["direction"])))
+        jobs = []
+        for t, reason in todo:
+            if t["id"] in self._selling or now < self._sell_block.get(t["id"], (0, 0))[0]:
+                continue
+            self._selling.add(t["id"])
+            jobs.append(self._follow_close(t, reason))
+        if not jobs:
+            return
+        results = await asyncio.gather(*jobs, return_exceptions=True)
+        if any(r is True for r in results):
+            await self._refresh_balance()
+            self._emit_trade_update()
+            self._emit_positions()
+
+    async def _follow_close(self, t, reason):
+        """Close ONE position. A failure here never affects any other position."""
+        try:
+            ok = await self._sell_position(t, reason, fast=True)
+            if ok:
+                self._sell_block.pop(t["id"], None)
+            else:
+                fails = self._sell_block.get(t["id"], (0, 0))[1] + 1
+                self._sell_block[t["id"]] = (time.time() + min(5 * fails, 60), fails)
+            return ok
+        except Exception as e:
+            log.error("Close of trade #%s failed: %s", t["id"], e)
+            fails = self._sell_block.get(t["id"], (0, 0))[1] + 1
+            self._sell_block[t["id"]] = (time.time() + min(5 * fails, 60), fails)
+            return False
+        finally:
+            self._selling.discard(t["id"])
+
+    def _follow_entry_allowed(self, zone):
+        now = time.time()
+        if self._stop_requested or not self.running:
+            return False, "Bot is stopping"
+        if not self.broker.connected or self.broker.auth_failed:
+            return False, "Not connected to Deriv"
+        if now - self._last_tick > CF_MAX_TICK_AGE:
+            return False, "Price feed is not live"
+        if _in_daily_reset_window():
+            return False, "Daily reset window"
+        if now < self._entry_block_until:
+            return False, "Waiting after a refused order"
+        if get_unresolved_orders(self.user_id, self.mode):
+            return False, "Waiting to reconcile an earlier order of unknown status"
+        ok, why = self.risk.check()
+        if not ok:
+            return False, why
+        if self.risk.positions_available() < 1:
+            return False, "Position limit reached ({}/{})".format(self.risk.positions_open(), self.max_positions)
+        if not ALLOW_HEDGE:
+            for t in get_active_trades(self.user_id, self.mode):
+                if t["symbol"] == self.symbol and t["direction"] != zone:
+                    return False, "Opposite position still closing"
+        return True, ""
+
+    async def _follow_entries(self, zone, price, opn, band, held):
+        async with self._lock:
+            if self.tracker.zone != zone:
+                return
+            ok, why = self._follow_entry_allowed(zone)
+            if not ok:
+                return
+            reason = ("Candle {} confirmed for {:.0f}s on {} (price {:.5f} vs candle open {:.5f}, band {:.5f})"
+                      .format("bullish" if zone == "BUY" else "bearish", held, self.timeframe, price, opn, band))
+            signal = Signal(zone, self.symbol, price, opn, price, reason, "CANDLE_FOLLOW", None)
+            opened = 0
+            while self.risk.positions_available() >= 1 and not self._stop_requested:
+                if self.tracker.zone != zone:           # direction changed meanwhile -> stop opening
+                    break
+                stake, err = self.risk.stake_checked()
+                if err:
+                    self._entry_block_until = time.time() + CF_ENTRY_RETRY_SEC
+                    self._emit("trade_error", {"message": "Order refused: " + err})
+                    break
+                placed = await self._open_position(signal, stake)
+                if not placed:
+                    self._entry_block_until = time.time() + CF_ENTRY_RETRY_SEC
+                    break
+                opened += 1
+                await asyncio.sleep(0.2)
+            if opened:
+                log.info("SIGNAL %s | %s | opened %d position(s) | %s", zone, self.symbol, opened, reason)
+                try:
+                    save_signal(self.symbol, self.timeframe, zone, opn, price, 0.0, price)
+                except Exception as e:
+                    log.error("save_signal error: %s", e)
+                self._emit_signal(signal, True, "{} position(s) opened".format(opened))
+                await self._refresh_balance()
+                self._emit_trade_update()
+                self._emit_positions()
+
+    def _emit_follow_analysis(self, now, force=False):
+        if not force and now - self._last_follow_emit < 1.0:
+            return
+        self._last_follow_emit = now
+        def card(tf):
+            v = self._follow_view(tf)
+            if v is None:
+                return {"direction": "NONE", "a": 0, "b": 0, "c": 0}
+            zone, opn, price, band = v
+            return {"direction": zone, "a": round(opn, 5), "b": round(price, 5), "c": round(band, 5)}
+        self._emit("analysis_update", {"m5": card("M5"), "m1": card("M1"),
+                                       "labels": self.info["labels"], "rules": self.info["rules"],
+                                       "strategy": self.info["title"], "kind": "follow",
+                                       "timeframe": self.timeframe})
+
+    # ── Per-position live monitoring ─────────────────────────
+    async def _positions_loop(self):
+        """Every few seconds: re-price ALL open positions together, record settled ones,
+        apply profit protection, and refresh the dashboard's position list."""
+        while self.running and not self._stop_requested:
+            await asyncio.sleep(POSITION_POLL_SEC)
+            if not self.running or self._stop_requested or not self.broker.connected:
+                continue
+            try:
+                async with self._lock:
+                    await self._reconcile_trades()
+                if self.strategy == "CANDLE_FOLLOW" and CF_PROTECT_PROFIT:
+                    await self._follow_exits(self.tracker.zone)
+                self._emit_positions()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.error("Position monitor error: %s", e)
+
+    def _free_slot(self):
+        used = {int(t.get("position_num") or 0) for t in get_active_trades(self.user_id, self.mode)}
+        for n in range(1, max(self.max_positions, 1) + 20):
+            if n not in used:
+                return n
+        return 1
+
+    def _emit_positions(self):
+        slots = {}
+        for t in get_active_trades(self.user_id, self.mode):
+            n = int(t.get("position_num") or 0) or 1
+            while n in slots:
+                n += 1
+            slots[n] = t
+        rows = []
+        for n in range(1, max(self.max_positions, max(slots) if slots else 0) + 1):
+            t = slots.get(n)
+            if t is None:
+                rows.append({"slot": n, "empty": True})
+                continue
+            rows.append({"slot": n, "empty": False, "id": t["id"], "direction": t["direction"],
+                         "symbol": t["symbol"], "stake": t["stake"], "status": t["status"],
+                         "profit": self.pnl_now.get(t["id"]), "peak": self.pnl_peak.get(t["id"]),
+                         "opened_at": t["opened_at"]})
+        self._emit("positions_update", {"positions": rows, "max_positions": self.max_positions,
+                                        "floating_pnl": self.floating_pnl})
+
     # ── Reconciliation / accounting ──────────────────────────
     def _record_close(self, t, pnl, exit_price, reason, sell_price=None):
         """Persist a CONFIRMED result exactly once. Returns True only the first time."""
@@ -635,6 +890,8 @@ class BotSession:
         status = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "EVEN")
         if not close_trade(t["id"], exit_price, pnl, status, reason, sell_price):
             return False                                   # duplicate event: already recorded
+        self.pnl_now.pop(t["id"], None)
+        self.pnl_peak.pop(t["id"], None)
         log.info("TRADE CLOSED #%s | %s | P&L %.2f | %s", t["id"], status, pnl, reason)
         self._emit("trade_closed", {"trade_id": t["id"], "pnl": pnl, "status": status, "reason": reason})
         return True
@@ -648,6 +905,7 @@ class BotSession:
         if await self._resolve_unconfirmed():
             changed = True
 
+        todo = []
         for t in get_reconcilable_trades(self.user_id, self.mode):
             if t["status"] in ("PENDING", "UNCONFIRMED"):
                 continue
@@ -662,8 +920,14 @@ class BotSession:
                 continue
             if not self.broker.connected:
                 continue
+            todo.append((t, cid))
 
-            info = await self.broker.get_contract(cid)
+        # Ask Deriv about every open position AT THE SAME TIME (independent, not one by one).
+        infos = await asyncio.gather(*[self.broker.get_contract(cid) for _, cid in todo],
+                                     return_exceptions=True) if todo else []
+        for (t, cid), info in zip(todo, infos):
+            if isinstance(info, Exception):
+                info = {}
             if info and (info.get("is_sold") or info.get("status") in ("won", "lost")):
                 pnl = _num(info.get("profit"))
                 exit_p = _num(info.get("sell_spot") or info.get("exit_tick"), _num(t["entry_price"]))
@@ -673,7 +937,10 @@ class BotSession:
             elif info:
                 if t["status"] == "UNRECONCILED":
                     update_trade(t["id"], status="OPEN")
-                floating += _num(info.get("profit"))
+                live = _num(info.get("profit"))
+                floating += live
+                self.pnl_now[t["id"]] = live
+                self.pnl_peak[t["id"]] = max(self.pnl_peak.get(t["id"], live), live)
             else:
                 opened = _opened_at_ts(t["opened_at"]) or now
                 if t["status"] == "OPEN" and now - opened > dur * 3 + 300:
@@ -757,10 +1024,14 @@ class BotSession:
                 c = list(self.candles.get(tf, []))
                 if c:
                     self._emit_candles(tf, c[-200:])
-            m1, m5 = self._df("M1"), self._df("M5")
-            if m1 is not None:
-                self._emit_analysis(m5, m1)
+            if self.strategy == "CANDLE_FOLLOW":
+                self._emit_follow_analysis(time.time(), force=True)
+            else:
+                m1, m5 = self._df("M1"), self._df("M5")
+                if m1 is not None:
+                    self._emit_analysis(m5, m1)
             self._emit_trade_update()
+            self._emit_positions()
         except Exception as e:
             log.error("Snapshot error: %s", e)
 

@@ -25,7 +25,7 @@ from bot_engine import BotSession
 from broker import fetch_accounts
 from config import (SECRET_KEY, SECRET_KEY_IS_DEFAULT, FLASK_PORT, SYMBOLS, MIN_STAKE, MAX_STAKE,
                     MAX_OPEN_TRADES, ALLOW_REGISTRATION, STRATEGIES, LOSS_POLICIES,
-                    DERIV_DEMO_TOKEN, DERIV_LIVE_TOKEN)
+                    DERIV_DEMO_TOKEN, DERIV_LIVE_TOKEN, TIMEFRAME_CHOICES)
 from logger import log
 
 app = Flask(__name__)
@@ -43,7 +43,7 @@ socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
 active_sessions = {}
 _workers_lock = threading.RLock()
 
-APPLIED_LIVE_KEYS    = ("lot_size", "max_positions", "loss_policy", "close_on_stop")  # can change while running
+APPLIED_LIVE_KEYS    = ("lot_size", "max_positions", "loss_policy", "close_on_stop", "timeframe")  # can change while running
 APPLIED_RESTART_KEYS = ("symbol", "mode", "strategy", "account_id")                  # need Stop -> Start
 
 
@@ -93,6 +93,10 @@ def validate_config(data, base):
             if isinstance(v, str):
                 v = v.strip().lower() in ("1", "true", "yes", "on")
             cfg["close_on_stop"] = bool(v)
+        if "timeframe" in data:
+            if data["timeframe"] not in TIMEFRAME_CHOICES:
+                return None, "Timeframe must be 1 minute (M1) or 5 minutes (M5)"
+            cfg["timeframe"] = data["timeframe"]
         if "account_id" in data:
             v = str(data["account_id"] or "").strip()
             if len(v) > 64 or not all(ch.isalnum() or ch in "-_" for ch in v):
@@ -117,7 +121,8 @@ def _make_session(uid, cfg):
         user_id=uid, symbol=cfg["symbol"], mode=cfg["mode"], emit_fn=emit_to_user,
         lot_size=cfg["lot_size"], max_positions=cfg["max_positions"],
         strategy=cfg["strategy"], loss_policy=cfg["loss_policy"],
-        close_on_stop=cfg["close_on_stop"], account_id=cfg.get("account_id", ""))
+        close_on_stop=cfg["close_on_stop"], account_id=cfg.get("account_id", ""),
+        timeframe=cfg.get("timeframe", "M1"))
 
 
 def _start_worker(uid, cfg):
@@ -146,7 +151,7 @@ def _supervise_once():
             if sess is not None and (sess.alive or sess._stop_requested):
                 continue
             cfg = {k: state[k] for k in ("symbol", "mode", "lot_size", "max_positions",
-                                         "strategy", "loss_policy", "close_on_stop", "account_id")}
+                                         "strategy", "loss_policy", "close_on_stop", "account_id", "timeframe")}
             new = _make_session(uid, cfg)
             active_sessions[uid] = new
             new.start()
@@ -265,6 +270,7 @@ def dashboard():
                            settings=settings,
                            strategies=STRATEGIES,
                            loss_policies=LOSS_POLICIES,
+                           timeframes=TIMEFRAME_CHOICES,
                            min_stake=MIN_STAKE,
                            max_stake=MAX_STAKE,
                            max_positions_limit=MAX_OPEN_TRADES)
@@ -376,7 +382,8 @@ def api_update_bot():
                 k.replace("_", " "))}), 400
 
     sess.update_settings(lot_size=cfg["lot_size"], max_positions=cfg["max_positions"],
-                         loss_policy=cfg["loss_policy"], close_on_stop=cfg["close_on_stop"])
+                         loss_policy=cfg["loss_policy"], close_on_stop=cfg["close_on_stop"],
+                         timeframe=cfg["timeframe"])
     save_bot_state(uid, sess.applied_config())
     save_settings(uid, sess.applied_config())
     out = _settings_payload(uid)

@@ -18,7 +18,7 @@ var MAX_LOT = LIMITS.max_stake || 500;
 var MAX_POS = LIMITS.max_positions || 10;
 
 var state = {
-  symbol: INIT.saved.symbol || "R_50", mode: INIT.saved.mode || "demo",
+  symbol: INIT.saved.symbol || "R_50", mode: INIT.saved.mode || "demo", timeframe: INIT.saved.timeframe || "M1",
   botRunning: false, workerState: "stopped", activeTf: "M1",
   lotSize: INIT.saved.lot_size || 1.0, maxPositions: INIT.saved.max_positions || 1,
   charts: {}, candles: {}, ema: { fast: 5, slow: 13 }, realizedTotal: null,
@@ -50,11 +50,25 @@ function closeSidebar() {
 }
 
 // ── SocketIO ─────────────────────────────────────────────────
-var socket = io();
+var LIBS = window.__libStatus || {};
+var socket = (typeof io !== "undefined") ? io() : null;
+if (!socket) {
+  socket = { on: function () {}, emit: function () {} };       // page still works (settings, history)
+  setTimeout(function () {
+    showError("The live-connection library (socket.io) could not be loaded - check your internet, " +
+              "ad-blocker or firewall, then reload. Live charts and positions need it.");
+  }, 300);
+}
 
-socket.on("connect", function() {
+var lastSnapshotAsk = 0;
+function askSnapshot() {
+  var now = Date.now();
+  if (now - lastSnapshotAsk < 4000) return;
+  lastSnapshotAsk = now;
   socket.emit("request_snapshot");   // ask the server to (re)send charts / status / trades
-});
+}
+socket.on("connect", function() { chartNote("Connected - waiting for candle data..."); askSnapshot(); });
+socket.on("disconnect", function() { chartNote("Connection lost - reconnecting..."); });
 
 socket.on("bot_status", function(d) { handleStatus(d); });
 
@@ -73,8 +87,11 @@ socket.on("candles_init", function(d) {
 
 socket.on("candle_update", function(d) {
   if (d.symbol !== state.symbol) return;
+  if (!state.charts[d.tf]) { askSnapshot(); return; }   // missed the first batch -> ask again
   updateCandle(d.tf, d.candle);
 });
+
+socket.on("positions_update", function(d) { renderPositions(d); });
 
 socket.on("signal", function(sig) { addSignal(sig); });
 
@@ -278,19 +295,21 @@ function getConfig() {
     strategy:      $("strategy-select").value,
     loss_policy:   $("loss-policy-select").value,
     close_on_stop: $("close-on-stop").checked,
-    account_id:    $("account-select").value || ""
+    account_id:    $("account-select").value || "",
+    timeframe:     $("timeframe-select").value
   };
 }
 
 var CFG_LABELS = { symbol: "pair", mode: "account mode", lot_size: "stake", max_positions: "max positions",
                    strategy: "strategy", loss_policy: "loss policy", close_on_stop: "close on stop",
-                   account_id: "account" };
-var CFG_KEYS = ["symbol", "mode", "lot_size", "max_positions", "strategy", "loss_policy", "close_on_stop", "account_id"];
+                   account_id: "account", timeframe: "timeframe" };
+var CFG_KEYS = ["symbol", "mode", "lot_size", "max_positions", "strategy", "loss_policy", "close_on_stop", "account_id", "timeframe"];
 
 function describe(cfg) {
   if (!cfg) return "—";
   return String(cfg.mode).toUpperCase() + " · " + cfg.symbol + " · stake " + Number(cfg.lot_size).toFixed(2) +
-         " · max " + cfg.max_positions + " · " + (STRATEGY_NAMES[cfg.strategy] || cfg.strategy);
+         " · max " + cfg.max_positions + " · " + (STRATEGY_NAMES[cfg.strategy] || cfg.strategy) +
+         (cfg.strategy === "CANDLE_FOLLOW" ? " · " + (cfg.timeframe || "M1") : "");
 }
 
 function diffKeys(a, b) {
@@ -319,7 +338,18 @@ function refreshPending() {
   $("cfg-pending-line").classList.toggle("has-pending", parts.length > 0);
 }
 
-function onSettingChanged() { refreshPending(); }
+function syncTimeframeEnabled() {
+  var follow = $("strategy-select").value === "CANDLE_FOLLOW";
+  $("timeframe-select").disabled = !follow;
+  $("timeframe-select").title = follow ? "" : "The timeframe choice applies to the Candle Follow strategy";
+}
+
+function onSettingChanged() { syncTimeframeEnabled(); refreshPending(); }
+
+function onTimeframeChange() {
+  switchChart($("timeframe-select").value);       // show the chart of the timeframe being followed
+  refreshPending();
+}
 
 function applyPayload(d) {
   if (d.saved)   state.saved = d.saved;
@@ -356,40 +386,66 @@ function updateLegend() {
   $("legend-b").textContent = "EMA " + state.ema.slow;
 }
 
+function chartNote(text) {
+  var m = $("chart-message");
+  if (m && $("chart-placeholder").style.display !== "none") m.textContent = text;
+}
+
+// Charts need strictly increasing times and finite numbers; anything else is dropped here
+// instead of making the whole chart fail.
+function cleanCandles(candles) {
+  var out = [], last = -1;
+  (candles || []).slice().sort(function(a, b) { return a.epoch - b.epoch; }).forEach(function(x) {
+    var t = +x.epoch, o = +x.open, h = +x.high, l = +x.low, c = +x.close;
+    if (!isFinite(t) || !isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c)) return;
+    if (t === last) { out[out.length - 1] = { time: t, open: o, high: h, low: l, close: c }; return; }
+    out.push({ time: t, open: o, high: h, low: l, close: c }); last = t;
+  });
+  return out;
+}
+
 function initChart(tf, candles) {
   var pane = $("chart-" + tf);
   if (!pane) return;
-  var ph = $("chart-placeholder");
-  if (ph) ph.style.display = "none";
-
-  if (!state.charts[tf]) {
-    var box = $("chart-container");
-    var chart = LightweightCharts.createChart(pane, {
-      width:  box.clientWidth || 600,
-      height: box.clientHeight || 300,
-      layout: { background: { color: "#111827" }, textColor: "#94a3b8" },
-      grid:   { vertLines: { color: "#1e293b" }, horzLines: { color: "#1e293b" } },
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-      rightPriceScale: { borderColor: "#1e293b" },
-      timeScale: { borderColor: "#1e293b", timeVisible: true, secondsVisible: false },
-      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true },
-      handleScale:  { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
-    });
-    var cs = chart.addCandlestickSeries({
-      upColor: "#10b981", downColor: "#ef4444",
-      borderUpColor: "#10b981", borderDownColor: "#ef4444",
-      wickUpColor: "#10b981", wickDownColor: "#ef4444",
-    });
-    var eFast = chart.addLineSeries({ color: "#ef4444", lineWidth: 1, title: "EMA" + state.ema.fast });
-    var eSlow = chart.addLineSeries({ color: "#a855f7", lineWidth: 1, title: "EMA" + state.ema.slow });
-    state.charts[tf] = { chart: chart, cs: cs, eFast: eFast, eSlow: eSlow };
-
-    if (!state.resizeObs && window.ResizeObserver) {
-      state.resizeObs = new ResizeObserver(function() { Object.keys(state.charts).forEach(sizeChart); });
-      state.resizeObs.observe(box);
-    }
+  if (typeof LightweightCharts === "undefined") {
+    chartNote("The chart library could not be loaded (blocked or offline). Reload the page, or check your ad-blocker/firewall.");
+    return;
   }
-  populateChart(tf, candles);
+  try {
+    if (!state.charts[tf]) {
+      var box = $("chart-container");
+      var chart = LightweightCharts.createChart(pane, {
+        width:  box.clientWidth || 600,
+        height: box.clientHeight || 300,
+        layout: { background: { color: "#111827" }, textColor: "#94a3b8" },
+        grid:   { vertLines: { color: "#1e293b" }, horzLines: { color: "#1e293b" } },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: "#1e293b" },
+        timeScale: { borderColor: "#1e293b", timeVisible: true, secondsVisible: false },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true },
+        handleScale:  { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      });
+      var cs = chart.addCandlestickSeries({
+        upColor: "#10b981", downColor: "#ef4444",
+        borderUpColor: "#10b981", borderDownColor: "#ef4444",
+        wickUpColor: "#10b981", wickDownColor: "#ef4444",
+      });
+      var eFast = chart.addLineSeries({ color: "#ef4444", lineWidth: 1, title: "EMA" + state.ema.fast });
+      var eSlow = chart.addLineSeries({ color: "#a855f7", lineWidth: 1, title: "EMA" + state.ema.slow });
+      state.charts[tf] = { chart: chart, cs: cs, eFast: eFast, eSlow: eSlow };
+
+      if (!state.resizeObs && window.ResizeObserver) {
+        state.resizeObs = new ResizeObserver(function() { Object.keys(state.charts).forEach(sizeChart); });
+        state.resizeObs.observe(box);
+      }
+    }
+    populateChart(tf, candles);
+    var ph = $("chart-placeholder");
+    if (ph) ph.style.display = "none";          // hide the message only once a chart really exists
+  } catch (e) {
+    if (window.console) console.error("Chart error", e);
+    chartNote("Chart could not be drawn: " + (e && e.message ? e.message : e));
+  }
 }
 
 function sizeChart(tf) {
@@ -400,9 +456,7 @@ function sizeChart(tf) {
 function populateChart(tf, candles) {
   if (!state.charts[tf] || !candles || !candles.length) return;
   var c = state.charts[tf];
-  c.cs.setData(candles.map(function(x) {
-    return { time: x.epoch, open: +x.open, high: +x.high, low: +x.low, close: +x.close };
-  }));
+  c.cs.setData(cleanCandles(candles));
   c.eFast.setData(computeEma(candles, state.ema.fast));
   c.eSlow.setData(computeEma(candles, state.ema.slow));
 }
@@ -410,13 +464,17 @@ function populateChart(tf, candles) {
 function updateCandle(tf, candle) {
   var c = state.charts[tf];
   if (!c) return;
-  c.cs.update({ time: candle.epoch, open: +candle.open, high: +candle.high, low: +candle.low, close: +candle.close });
   var store = state.candles[tf] || [];
   if (store.length && store[store.length - 1].epoch === candle.epoch) store[store.length - 1] = candle;
-  else { store.push(candle); state.candles[tf] = store; }
-  var f = computeEma(store, state.ema.fast), sl = computeEma(store, state.ema.slow);
-  if (f.length)  c.eFast.update(f[f.length - 1]);
-  if (sl.length) c.eSlow.update(sl[sl.length - 1]);
+  else if (!store.length || candle.epoch > store[store.length - 1].epoch) { store.push(candle); state.candles[tf] = store; }
+  else return;                                   // older than what is drawn: ignore
+  if (store.length > 700) store.splice(0, store.length - 700);
+  try {
+    c.cs.update({ time: candle.epoch, open: +candle.open, high: +candle.high, low: +candle.low, close: +candle.close });
+    var f = computeEma(store, state.ema.fast), sl = computeEma(store, state.ema.slow);
+    if (f.length)  c.eFast.update(f[f.length - 1]);
+    if (sl.length) c.eSlow.update(sl[sl.length - 1]);
+  } catch (e) { if (window.console) console.error("Candle update error", e); }
 }
 
 function computeEma(candles, period) {
@@ -473,9 +531,11 @@ function renderAnalysis(d) {
     var el = $(tf + "-direction");
     el.textContent = dir === "BUY" ? "BULLISH" : dir === "SELL" ? "BEARISH" : "NEUTRAL";
     el.className = "tf-direction " + dir.toLowerCase();
-    $(tf + "-trend").innerHTML = dir === "BUY" ? ic("up", "icon-green") + " Fast EMA above slow EMA"
-                              : dir === "SELL" ? ic("down", "icon-red") + " Fast EMA below slow EMA"
-                              : ic("minus") + " No clear direction";
+    var follow = d.kind === "follow";
+    $(tf + "-trend").innerHTML =
+        dir === "BUY"  ? ic("up", "icon-green") + (follow ? " Price above the candle open" : " Fast EMA above slow EMA")
+      : dir === "SELL" ? ic("down", "icon-red") + (follow ? " Price below the candle open" : " Fast EMA below slow EMA")
+      : ic("minus") + (follow ? " Inside the neutral band" : " No clear direction");
   });
   if (d.strategy) $("strategy-title").textContent = d.strategy;
   if (d.rules) {
@@ -488,6 +548,35 @@ function renderAnalysis(d) {
       box.insertBefore(n, status);
     });
   }
+}
+
+// ── Open positions: "Position n - Running - live performance" ──
+var POS_STATUS = { OPEN: "Running", PENDING: "Opening", UNCONFIRMED: "Verifying order" };
+
+function renderPositions(d) {
+  var list = $("positions-list");
+  var rows = (d && d.positions) || [];
+  if (!rows.length) { list.innerHTML = '<div class="empty-feed">Positions appear here when the bot opens trades...</div>'; return; }
+  var running = 0, total = 0, any = false;
+  list.innerHTML = rows.map(function(p) {
+    if (p.empty) {
+      return '<div class="pos-row empty"><span class="pos-n">Position ' + p.slot + '</span>' +
+             '<span class="pos-state">' + ic("clock") + ' Waiting for entry</span><span class="pos-pl">—</span></div>';
+    }
+    running++;
+    var has = p.profit !== null && p.profit !== undefined;
+    if (has) { total += +p.profit; any = true; }
+    var cls = has ? (p.profit > 0 ? "green" : p.profit < 0 ? "red" : "") : "";
+    var pl = has ? money(p.profit, true) : "…";
+    var dir = String(p.direction).toLowerCase();
+    return '<div class="pos-row"><span class="pos-n">Position ' + p.slot + '</span>' +
+           '<span class="pos-dir ' + esc(dir) + '">' + ic(dir === "buy" ? "up" : "down") + " " + esc(p.direction) + '</span>' +
+           '<span class="pos-state">' + ic("radio") + " " + esc(POS_STATUS[p.status] || p.status) + '</span>' +
+           '<span class="pos-stake">$' + parseFloat(p.stake).toFixed(2) + '</span>' +
+           '<span class="pos-pl ' + cls + '">' + pl + '</span></div>';
+  }).join("");
+  $("positions-summary").textContent = " " + running + " / " + rows.length + " running" +
+                                       (any ? " · live " + money(total, true) : "");
 }
 
 // ── Signal feed ──────────────────────────────────────────────
@@ -648,6 +737,8 @@ $("live-modal-check").addEventListener("change", function() { $("live-modal-ok")
   document.querySelectorAll("#strategy-select option").forEach(function(o) { STRATEGY_NAMES[o.value] = o.textContent; });
   setLot(state.lotSize);
   setPositions(state.maxPositions);
+  syncTimeframeEnabled();
+  if (state.timeframe === "M5") switchChart("M5");
   $("mode-warning").style.display = state.mode === "live" ? "block" : "none";
   applyState("stopped", "Stopped", "", false);
   refreshPending();

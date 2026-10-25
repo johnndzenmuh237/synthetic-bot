@@ -21,7 +21,7 @@ var state = {
   symbol: INIT.saved.symbol || "R_50", mode: INIT.saved.mode || "demo",
   botRunning: false, workerState: "stopped", activeTf: "M1",
   lotSize: INIT.saved.lot_size || 1.0, maxPositions: INIT.saved.max_positions || 1,
-  charts: {}, candles: {}, ema: { fast: 5, slow: 13 },
+  charts: {}, candles: {}, ema: { fast: 5, slow: 13 }, realizedTotal: null,
   saved: INIT.saved || null, applied: null, balance: null, resizeObs: null
 };
 
@@ -173,7 +173,20 @@ function renderBalance(d) {
   $("floating-pnl").textContent   = money(d.floating_pnl, true);   colorize($("floating-pnl"), d.floating_pnl);
   $("open-positions").textContent = (d.open_positions || 0) + (d.open_stake ? " · $" + parseFloat(d.open_stake).toFixed(2) : "");
   renderVerified(d.account_type, d.account_id, d.mode);
+  state.realizedTotal = parseFloat(d.realized_total || 0);
+  renderBalanceMath();
   updateLotWarning();
+}
+
+// "Before bot trades + realized P&L = current balance" (Deriv's balance already
+// includes every settled win/loss; this line only explains where it came from).
+function renderBalanceMath() {
+  var el = $("balance-math");
+  if (!el) return;
+  if (state.balance == null || state.realizedTotal == null) { el.textContent = ""; return; }
+  var cur = state.balance, r = state.realizedTotal, start = cur - r;
+  el.textContent = "$" + start.toFixed(2) + " " + (r < 0 ? "- $" : "+ $") + Math.abs(r).toFixed(2) +
+                   " = $" + cur.toFixed(2);
 }
 
 function renderVerified(type, id, mode) {
@@ -516,6 +529,7 @@ function renderTrades(trades) {
 }
 
 function renderStats(stats) {
+  if (!state.botRunning) { state.realizedTotal = parseFloat(stats.total_pnl || 0); renderBalanceMath(); }
   $("stat-total").textContent  = stats.total  || 0;
   $("stat-wins").textContent   = stats.wins   || 0;
   $("stat-losses").textContent = stats.losses || 0;
@@ -558,8 +572,22 @@ function loadAccounts() {
       sel.appendChild(o);
     });
     if (want) sel.value = want;
+    showIdleBalance(d.accounts, sel.value);
     refreshPending();
   }).catch(function() { $("account-verified").textContent = "Could not list accounts"; });
+}
+
+// Bot not running: still show the real Deriv balance of the account (read-only REST call).
+function showIdleBalance(accounts, selectedId) {
+  if (state.botRunning || !accounts || !accounts.length) return;
+  var a = accounts.filter(function(x) { return x.account_id === selectedId; })[0] || accounts[0];
+  if (a.balance == null) return;
+  state.balance = parseFloat(a.balance);
+  $("balance-display").textContent = (a.currency || "USD") + " " + state.balance.toFixed(2);
+  $("balance-kind").textContent = state.mode === "live" ? "Live account balance" : "Demo balance (virtual funds)";
+  $("account-id-display").textContent = a.account_id;
+  $("balance-note").textContent = "Read from Deriv — bot not running";
+  renderBalanceMath();
 }
 
 function onAccountChange() {

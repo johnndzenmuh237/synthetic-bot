@@ -181,7 +181,10 @@ def start_supervisor():
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not session.get("user_id"):
+        uid = session.get("user_id")
+        # The cookie can outlive the user (e.g. the database was reset by a redeploy).
+        if not uid or not get_user_by_id(uid):
+            session.clear()
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return decorated

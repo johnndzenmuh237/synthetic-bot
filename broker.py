@@ -16,13 +16,54 @@ from config import (
 from logger import log
 
 
+class OrderStatusUnknown(Exception):
+    """The buy request was sent but Deriv's answer never arrived (timeout / dropped
+    connection). The order may or may not exist — it must be reconciled, never repeated."""
+
+
+async def fetch_accounts(token, app_id=None):
+    """List the Deriv accounts a token can access (REST). Returns plain dicts:
+    [{"account_id","account_type","balance","currency"}]. Never returns the token."""
+    if not token:
+        raise ConnectionError("No API token configured for this account type.")
+    headers = {"Deriv-App-ID": str(app_id or DERIV_APP_ID),
+               "Authorization": "Bearer {}".format(token)}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("{}/accounts".format(DERIV_REST_BASE), headers=headers,
+                                   timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                raw = await resp.text()
+                if resp.status == 401:
+                    raise ConnectionError("Invalid or expired API token.")
+                if resp.status != 200:
+                    raise ConnectionError("Deriv /accounts error (HTTP {}): {}".format(
+                        resp.status, raw.strip()[:200]))
+                try:
+                    body = json.loads(raw)
+                except ValueError:
+                    raise ConnectionError("Unexpected response from Deriv /accounts")
+    except aiohttp.ClientError as e:
+        raise ConnectionError("Could not reach Deriv REST API: {}".format(e))
+    data = body.get("data", [])
+    if not isinstance(data, list):
+        data = [data]
+    return [{"account_id": a.get("account_id", ""),
+             "account_type": a.get("account_type", ""),
+             "balance": a.get("balance"),
+             "currency": a.get("currency", "")} for a in data]
+
+
 class DerivBroker:
-    def __init__(self, mode="demo"):
+    def __init__(self, mode="demo", account_id=""):
         self.mode        = mode
         self.token       = DERIV_DEMO_TOKEN if mode == "demo" else DERIV_LIVE_TOKEN
         self.ws          = None
         self.balance     = 0.0
+        self.preferred_account = (account_id or "").strip()   # optional user choice
         self.account_id  = ""
+        self.account_type = ""      # "demo" or "real" — as reported by Deriv itself
+        self.auth_failed = False    # True once Deriv rejected the token (stop retrying blindly)
+        self.balance_ok  = True     # False while the last balance refresh failed
         self.currency    = "USD"
         self.connected   = False
         self._req_id     = 0
@@ -113,6 +154,10 @@ class DerivBroker:
                         log.error("Resubscribe failed [%s %s]: %s", symbol, tf_key, e)
             except Exception as e:
                 log.error("Reconnect attempt failed: %s", e)
+                if self.auth_failed:
+                    log.error("Deriv rejected the token — no new orders will be submitted "
+                              "until the token is fixed and the bot is restarted.")
+                    break
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
         self._reconnecting = False
@@ -143,17 +188,18 @@ class DerivBroker:
         account_type = "real" if self.mode == "live" else "demo"
 
         async with aiohttp.ClientSession() as session:
-            # 1. List accounts and find the one matching demo/real
+            # 1. List accounts and pick the one the user asked for
             try:
                 async with session.get(
                         "{}/accounts".format(DERIV_REST_BASE),
                         headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     body = await self._read_response(resp)
                     if resp.status == 401:
+                        self.auth_failed = True
                         raise ConnectionError(
                             "Invalid or expired {} API token. Go to app.deriv.com → "
                             "Security and safety → API token, generate a new one, and "
-                            "update your .env file.".format(self.mode.upper()))
+                            "update your .env file / Render environment.".format(self.mode.upper()))
                     if resp.status != 200:
                         errs = body.get("errors", [{"message": "Unknown error"}])
                         raise ConnectionError(
@@ -162,20 +208,39 @@ class DerivBroker:
             except aiohttp.ClientError as e:
                 raise ConnectionError("Could not reach Deriv REST API: {}".format(e))
 
+            self.auth_failed = False
             accounts = body.get("data", [])
             if not isinstance(accounts, list):
                 accounts = [accounts]
-            account = next(
-                (a for a in accounts if a.get("account_type") == account_type), None)
+
+            if self.preferred_account:
+                account = next((a for a in accounts
+                                if a.get("account_id") == self.preferred_account), None)
+                if not account:
+                    raise ConnectionError(
+                        "Account {} is not available to this token. Pick another account "
+                        "or choose 'Automatic'.".format(self.preferred_account))
+                if account.get("account_type") != account_type:
+                    # SAFETY: never trade on a different account type than the one selected.
+                    raise ConnectionError(
+                        "Account {} is a {} account but the bot is set to {} mode. "
+                        "Refusing to connect.".format(
+                            self.preferred_account,
+                            "LIVE" if account.get("account_type") == "real" else "DEMO",
+                            self.mode.upper()))
+            else:
+                account = next(
+                    (a for a in accounts if a.get("account_type") == account_type), None)
             if not account:
                 raise ConnectionError(
                     "This token has no {} account attached. Create/select a {} "
                     "account on app.deriv.com and generate the token from there."
                     .format(self.mode.upper(), self.mode.upper()))
 
-            self.account_id = account.get("account_id", "")
-            self.balance    = float(account.get("balance", 0))
-            self.currency   = account.get("currency", "USD")
+            self.account_id   = account.get("account_id", "")
+            self.account_type = account.get("account_type", "")
+            self.balance      = float(account.get("balance", 0) or 0)
+            self.currency     = account.get("currency", "USD")
 
             # 2. Request the OTP + WebSocket URL for that account
             try:
@@ -279,15 +344,15 @@ class DerivBroker:
             log.error("subscribe_candles error [%s %s]: %s", symbol, tf_key, e)
 
     async def get_balance(self):
+        """Authoritative balance from Deriv. On failure the last known value is kept
+        and `balance_ok` is False so the UI can show 'refresh pending' instead of a
+        made-up number."""
         try:
-            # The connection is already scoped to one account via the OTP
-            # URL (see _get_otp_ws_url) — "account": "current" was the old
-            # authorize-based way to select an account and is no longer a
-            # valid property on this connection.
             resp = await self._send({"balance": 1}, timeout=10)
-            if "error" not in resp:
-                self.balance = float(resp["balance"]["balance"])
+            self.balance = float(resp["balance"]["balance"])
+            self.balance_ok = True
         except Exception as e:
+            self.balance_ok = False
             log.error("get_balance error: %s", e)
         return self.balance
 
@@ -324,6 +389,9 @@ class DerivBroker:
         raise last_exc
 
     async def place_trade(self, symbol, direction, stake):
+        """Returns the contract dict on success, {} when Deriv REJECTED the order
+        (reason in self.last_error), and raises OrderStatusUnknown when the buy was
+        sent but its outcome is unknown."""
         self.last_error = ""
         ctype = "CALL" if direction == "BUY" else "PUT"
 
@@ -344,6 +412,16 @@ class DerivBroker:
         try:
             buy = await self._send({"buy": pid, "price": max(float(ask or stake), float(stake))},
                                    timeout=15)
+        except asyncio.TimeoutError:
+            self.last_error = "No answer from Deriv to the buy request"
+            raise OrderStatusUnknown(self.last_error)
+        except ConnectionError as e:
+            if "send failed" in str(e).lower() or "not connected" in str(e).lower():
+                self.last_error = "Buy not sent: {}".format(e)     # never left this machine
+                log.error(self.last_error)
+                return {}
+            self.last_error = "Connection lost while buying: {}".format(e)
+            raise OrderStatusUnknown(self.last_error)
         except Exception as e:
             self.last_error = "Buy rejected: {}".format(e)
             log.error("Buy rejected: %s", e)
@@ -353,8 +431,8 @@ class DerivBroker:
         if not contract.get("contract_id"):
             self.last_error = "Buy returned no contract: {}".format(str(buy)[:200])
             log.error(self.last_error)
-            return {}
-        log.info("✅ TRADE OPENED | %s %s | Contract=%s | Stake=$%.2f",
+            raise OrderStatusUnknown(self.last_error)
+        log.info("TRADE OPENED | %s %s | Contract=%s | Stake=$%.2f",
                  direction, symbol, contract["contract_id"], stake)
         return contract
 
@@ -371,13 +449,23 @@ class DerivBroker:
         return resp.get("proposal_open_contract", {}) or {}
 
     async def close_trade(self, contract_id):
+        """Sell an open contract at market. Returns Deriv's `sell` dict, {} on refusal."""
         try:
-            resp = await self._send({"sell": contract_id, "price": 0}, timeout=15)
+            resp = await self._send({"sell": int(contract_id), "price": 0}, timeout=15)
         except Exception as e:
-            log.error("close_trade error: %s", e)
+            self.last_error = "Sell failed: {}".format(e)
+            log.error("close_trade error [%s]: %s", contract_id, e)
             return {}
-        if "error" in resp:
-            log.error("Close rejected [%s]: %s", contract_id, resp["error"]["message"])
-            return {}
-        log.info("🔒 TRADE CLOSED | Contract=%s", contract_id)
-        return resp.get("sell", {})
+        log.info("TRADE SOLD | Contract=%s", contract_id)
+        return resp.get("sell", {}) or {}
+
+    async def get_portfolio(self):
+        """Contracts Deriv currently shows as open for this account, or None if the
+        lookup is not possible (used only to reconcile orders of unknown status)."""
+        try:
+            resp = await self._send({"portfolio": 1}, timeout=15)
+            return (resp.get("portfolio") or {}).get("contracts", []) or []
+        except Exception as e:
+            log.error("get_portfolio error: %s", e)
+            return None
+

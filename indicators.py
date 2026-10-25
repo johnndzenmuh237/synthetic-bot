@@ -32,6 +32,23 @@ def compute_emas(df, fast=EMA_TREND_FAST, slow=EMA_TREND_SLOW):
     return df
 
 
+# ── RSI (Wilder smoothing) ───────────────────────────────────
+def compute_rsi(df, period=7):
+    """Adds an `rsi` column. No losses in the window -> 100, no movement -> 50."""
+    df = df.copy()
+    delta    = df["close"].diff()
+    gain     = delta.clip(lower=0)
+    loss     = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+    rs  = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - 100 / (1 + rs)
+    rsi = rsi.where(avg_loss != 0, 100.0)
+    rsi = rsi.where(~((avg_gain == 0) & (avg_loss == 0)), 50.0)
+    df["rsi"] = rsi.fillna(50.0)
+    return df
+
+
 # ── ATR / ADX (optional filters + spike detection) ───────────
 def _true_range(df):
     prev_close = df["close"].shift(1)

@@ -1,15 +1,29 @@
 "use strict";
 
-// ── State ────────────────────────────────────────────────────
-var state = {
-  symbol: "R_50", mode: "demo",
-  botRunning: false, activeTf: "M1",
-  lotSize: 1.00, maxPositions: 1,
-  charts: {}, candles: {}
-};
+// ── Icons (bundled SVG sprite in templates/_icons.html — no emojis) ──
+function ic(name, cls) {
+  return '<svg class="icon ' + (cls || "") + '" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function(c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
 
-var MIN_LOT = 0.35;
-var MAX_LOT = 500;
+// ── State ────────────────────────────────────────────────────
+var INIT   = window.__INIT__ || { saved: {}, limits: {} };
+var LIMITS = INIT.limits || {};
+var MIN_LOT = LIMITS.min_stake || 0.35;
+var MAX_LOT = LIMITS.max_stake || 500;
+var MAX_POS = LIMITS.max_positions || 10;
+
+var state = {
+  symbol: INIT.saved.symbol || "R_50", mode: INIT.saved.mode || "demo",
+  botRunning: false, workerState: "stopped", activeTf: "M1",
+  lotSize: INIT.saved.lot_size || 1.0, maxPositions: INIT.saved.max_positions || 1,
+  charts: {}, candles: {}, ema: { fast: 5, slow: 13 },
+  saved: INIT.saved || null, applied: null, balance: null, resizeObs: null
+};
 
 var SYMBOL_NAMES = {
   "R_10":"Volatility 10 Index","R_25":"Volatility 25 Index",
@@ -20,51 +34,38 @@ var SYMBOL_NAMES = {
   "1HZ100V":"Volatility 100 (1s) Index",
   "BOOM500":"Boom 500 Index","CRASH500":"Crash 500 Index"
 };
+var STRATEGY_NAMES = {};
+var LOSS_NAMES = {};
+
+function $(id) { return document.getElementById(id); }
 
 // ── Mobile sidebar ───────────────────────────────────────────
 function toggleSidebar() {
-  var s = document.getElementById("sidebar");
-  var o = document.getElementById("sidebar-overlay");
-  s.classList.toggle("open");
-  o.classList.toggle("open");
+  $("sidebar").classList.toggle("open");
+  $("sidebar-overlay").classList.toggle("open");
 }
 function closeSidebar() {
-  document.getElementById("sidebar").classList.remove("open");
-  document.getElementById("sidebar-overlay").classList.remove("open");
+  $("sidebar").classList.remove("open");
+  $("sidebar-overlay").classList.remove("open");
 }
 
 // ── SocketIO ─────────────────────────────────────────────────
 var socket = io();
 
 socket.on("connect", function() {
-  console.log("WS connected");
-  socket.emit("request_snapshot");   // ask the server to (re)send charts/status/trades
+  socket.emit("request_snapshot");   // ask the server to (re)send charts / status / trades
 });
+
+socket.on("bot_status", function(d) { handleStatus(d); });
 
 socket.on("trade_error", function(d) { showError(d.message); });
 
-socket.on("bot_status", function(d) {
-  updateStatus(d.state, d.message);
-  if (d.state === "error") showError(d.message);
-  else { dismissError(); if (d.state !== "stopped") showToast(d.message); }
-});
-
-socket.on("balance_update", function(d) {
-  var bal = parseFloat(d.balance || 0);
-  document.getElementById("balance-display").textContent =
-    (d.currency || "USD") + " " + bal.toFixed(2);
-  var pnl = parseFloat(d.daily_pnl || 0);
-  var el  = document.getElementById("daily-pnl");
-  el.textContent = "P&L: " + (pnl >= 0 ? "+" : "") + pnl.toFixed(2) + "%";
-  el.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
-  if (d.account_id)
-    document.getElementById("account-id-display").textContent = d.account_id;
-});
+socket.on("balance_update", function(d) { renderBalance(d); });
 
 socket.on("candles_init", function(d) {
-  // The server only sends candles for the symbol the bot is actually running,
-  // so adopt it instead of silently dropping data when the page default differs.
+  // The server only sends candles for the symbol the bot is really running.
   if (d.symbol !== state.symbol) setSymbolUI(d.symbol);
+  if (d.ema) { state.ema = d.ema; updateLegend(); }
   state.candles[d.tf] = d.candles;
   initChart(d.tf, d.candles);
   showChart(state.activeTf);
@@ -79,8 +80,7 @@ socket.on("signal", function(sig) { addSignal(sig); });
 
 socket.on("trade_closed", function(d) {
   var sign = d.pnl >= 0 ? "+" : "";
-  showToast("Trade #" + d.trade_id + " " + d.status +
-            " " + sign + "$" + parseFloat(d.pnl).toFixed(2));
+  showToast("Trade #" + d.trade_id + " " + d.status + " " + sign + "$" + parseFloat(d.pnl).toFixed(2));
 });
 
 socket.on("trades_update", function(d) {
@@ -88,112 +88,269 @@ socket.on("trades_update", function(d) {
   renderStats(d.stats);
 });
 
-socket.on("analysis_update", function(d) {
-  updateAnalysis("h4", d.h4);
-  updateAnalysis("h1", d.h1);
-  document.getElementById("exec-status").textContent = "✅ Monitoring M1 (trend: M5)";
-});
+socket.on("analysis_update", function(d) { renderAnalysis(d); });
 
-// ── Lot Size ─────────────────────────────────────────────────
+// ── Status (always the REAL state reported by the server) ────
+var ALIVE_STATES = ["starting", "running", "reconnecting", "paused", "stopping", "error"];
+
+function handleStatus(d) {
+  var st = d.state || "stopped";
+  if (d.worker_alive === false && st === "error") { applyState("error", d.message, d.detail, false); return; }
+  applyState(st, d.message, d.detail, st !== "stopped");
+  if (d.account_type || d.account_id) renderVerified(d.account_type, d.account_id, d.mode || state.mode);
+}
+
+function applyState(st, msg, detail, alive) {
+  state.workerState = st;
+  state.botRunning  = !!alive && st !== "stopped";
+  $("status-dot").className = "status-dot " + st;
+  var label = msg || st;
+  if (st === "paused" && detail) label = "Paused for risk protection — " + detail;
+  $("status-text").textContent = label;
+
+  if (st === "error") {
+    showError(msg || "Bot error");
+  } else if (st === "reconnecting" && detail) {
+    showError("Retrying — reason: " + detail);
+  } else {
+    dismissError();
+  }
+  setBotBtn(state.botRunning, st === "stopping");
+  $("btn-update").style.display   = state.botRunning ? "block" : "none";
+  $("running-info").style.display = state.botRunning ? "flex" : "none";
+  $("exec-status").innerHTML = ic(st === "running" ? "check" : st === "paused" ? "pause" : "clock") + " " +
+    esc(st === "running" ? "Monitoring closed M1 candles" :
+        st === "paused" ? "Paused — risk limit" :
+        st === "stopped" ? "Bot not running" : st.charAt(0).toUpperCase() + st.slice(1));
+  updateRunningBadges();
+  refreshPending();
+}
+
+function setBotBtn(running, stopping) {
+  $("bot-btn-icon").innerHTML = ic(running ? "stop" : "play");
+  $("bot-btn-text").textContent = stopping ? "Stopping..." : (running ? "Stop Bot" : "Activate Bot");
+  $("bot-btn").classList.toggle("running", running);
+  $("bot-btn").disabled = !!stopping;
+}
+
+function updateRunningBadges() {
+  var cfg = state.applied || getConfig();
+  $("ri-lot").textContent  = "Stake: " + Number(cfg.lot_size).toFixed(2);
+  $("ri-pos").textContent  = "Max: " + cfg.max_positions;
+  $("ri-mode").textContent = String(cfg.mode).toUpperCase();
+}
+
+function showError(msg) {
+  $("error-text").innerHTML = ic("alert") + " " + esc(msg);
+  $("error-banner").style.display = "flex";
+}
+function dismissError() { $("error-banner").style.display = "none"; }
+
+// ── Balance / accounting panel ───────────────────────────────
+function money(v, signed) {
+  var n = parseFloat(v || 0);
+  return (signed && n > 0 ? "+" : "") + (n < 0 ? "-" : "") + "$" + Math.abs(n).toFixed(2);
+}
+function colorize(el, v) {
+  var n = parseFloat(v || 0);
+  el.style.color = n > 0 ? "var(--green)" : n < 0 ? "var(--red)" : "";
+}
+
+function renderBalance(d) {
+  var bal = parseFloat(d.balance || 0);
+  state.balance = bal;
+  $("balance-display").textContent = (d.currency || "USD") + " " + bal.toFixed(2);
+  var demo = (d.account_type || (d.mode === "live" ? "real" : "demo")) === "demo";
+  $("balance-kind").textContent = demo ? "Demo balance (virtual funds)" : "Live account balance";
+  $("balance-note").textContent = d.balance_pending ? "Balance refresh pending — showing the last confirmed value" : "";
+  var pct = parseFloat(d.daily_pnl || 0);
+  var el = $("daily-pnl");
+  el.textContent = "Day: " + (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
+  el.style.color = pct >= 0 ? "var(--green)" : "var(--red)";
+  if (d.account_id) $("account-id-display").textContent = d.account_id;
+  $("realized-today").textContent = money(d.realized_today, true); colorize($("realized-today"), d.realized_today);
+  $("realized-total").textContent = money(d.realized_total, true); colorize($("realized-total"), d.realized_total);
+  $("floating-pnl").textContent   = money(d.floating_pnl, true);   colorize($("floating-pnl"), d.floating_pnl);
+  $("open-positions").textContent = (d.open_positions || 0) + (d.open_stake ? " · $" + parseFloat(d.open_stake).toFixed(2) : "");
+  renderVerified(d.account_type, d.account_id, d.mode);
+  updateLotWarning();
+}
+
+function renderVerified(type, id, mode) {
+  var el = $("account-verified");
+  if (!type) { el.textContent = "Account not verified yet"; el.className = "verified-line"; return; }
+  var live = type === "real";
+  el.innerHTML = ic("shield") + " Verified: " + (live ? "LIVE ACCOUNT" : "DEMO ACCOUNT") + (id ? " — " + esc(id) : "");
+  el.className = "verified-line " + (live ? "live" : "demo");
+  $("mode-badge").textContent = live ? "LIVE" : "DEMO";
+  if (mode && ((mode === "live") !== live)) showError("Account type mismatch — the bot will not trade until this is resolved.");
+}
+
+// ── Settings: stake ──────────────────────────────────────────
 function adjustLot(delta) {
-  var cur  = parseFloat(document.getElementById("lot-input").value) || 1.0;
+  var cur  = parseFloat($("lot-input").value) || 1.0;
   var next = Math.round((cur + delta) * 100) / 100;
   next = Math.max(MIN_LOT, Math.min(MAX_LOT, next));
-  document.getElementById("lot-input").value = next.toFixed(2);
+  $("lot-input").value = next.toFixed(2);
   state.lotSize = next;
   updateLotDisplay();
 }
 
 function setLot(val) {
   val = Math.max(MIN_LOT, Math.min(MAX_LOT, parseFloat(val)));
-  document.getElementById("lot-input").value = val.toFixed(2);
+  $("lot-input").value = val.toFixed(2);
   state.lotSize = val;
   updateLotDisplay();
-  document.querySelectorAll(".preset-btn").forEach(function(b) {
-    b.classList.toggle("active", parseFloat(b.textContent) === val);
-  });
 }
 
 function validateLot() {
-  var val = parseFloat(document.getElementById("lot-input").value);
+  var val = parseFloat($("lot-input").value);
   if (isNaN(val) || val < MIN_LOT) val = MIN_LOT;
   if (val > MAX_LOT) val = MAX_LOT;
   val = Math.round(val * 100) / 100;
-  document.getElementById("lot-input").value = val.toFixed(2);
+  $("lot-input").value = val.toFixed(2);
   state.lotSize = val;
   updateLotDisplay();
 }
 
 function updateLotDisplay() {
-  document.getElementById("lot-usd-label").textContent =
-    "= $" + state.lotSize.toFixed(2) + " / trade";
+  $("lot-usd-label").textContent = "= $" + state.lotSize.toFixed(2) + " / trade";
+  document.querySelectorAll(".preset-btn").forEach(function(b) {
+    b.classList.toggle("active", Math.abs(parseFloat(b.textContent) - state.lotSize) < 1e-9);
+  });
   updateTotalRisk();
+  updateLotWarning();
+  refreshPending();
 }
 
-// ── Max Positions ────────────────────────────────────────────
+function updateLotWarning() {
+  var el = $("lot-warning");
+  if (state.balance && state.lotSize > state.balance * 0.05)
+    el.innerHTML = ic("alert", "icon-gold") + " Stake is more than 5% of the account balance.";
+  else el.textContent = "";
+}
+
+// ── Settings: max open positions ─────────────────────────────
 function adjustPositions(delta) {
-  var cur  = parseInt(document.getElementById("positions-input").value) || 1;
-  var next = Math.max(1, Math.min(10, cur + delta));
-  document.getElementById("positions-input").value = next;
-  state.maxPositions = next;
-  updateTotalRisk();
+  var cur  = parseInt($("positions-input").value, 10) || 1;
+  setPositions(cur + delta);
 }
 
 function setPositions(val) {
-  val = Math.max(1, Math.min(10, parseInt(val)));
-  document.getElementById("positions-input").value = val;
+  val = Math.max(1, Math.min(MAX_POS, parseInt(val, 10) || 1));
+  $("positions-input").value = val;
   state.maxPositions = val;
-  updateTotalRisk();
   document.querySelectorAll(".pos-preset").forEach(function(b) {
-    b.classList.toggle("active", parseInt(b.textContent) === val);
+    b.classList.toggle("active", parseInt(b.textContent, 10) === val);
+  });
+  updateTotalRisk();
+  refreshPending();
+}
+
+function validatePositions() { setPositions($("positions-input").value); }
+
+function updateTotalRisk() {
+  var total = Math.round(state.lotSize * state.maxPositions * 100) / 100;
+  $("total-risk-label").textContent =
+    "Max exposure: $" + state.lotSize.toFixed(2) + " × " + state.maxPositions + " = $" + total.toFixed(2);
+}
+
+// ── Saved / Applied / Pending ────────────────────────────────
+function getConfig() {
+  return {
+    symbol:        state.symbol,
+    mode:          state.mode,
+    lot_size:      parseFloat($("lot-input").value) || state.lotSize,
+    max_positions: parseInt($("positions-input").value, 10) || state.maxPositions,
+    strategy:      $("strategy-select").value,
+    loss_policy:   $("loss-policy-select").value,
+    close_on_stop: $("close-on-stop").checked,
+    account_id:    $("account-select").value || ""
+  };
+}
+
+var CFG_LABELS = { symbol: "pair", mode: "account mode", lot_size: "stake", max_positions: "max positions",
+                   strategy: "strategy", loss_policy: "loss policy", close_on_stop: "close on stop",
+                   account_id: "account" };
+var CFG_KEYS = ["symbol", "mode", "lot_size", "max_positions", "strategy", "loss_policy", "close_on_stop", "account_id"];
+
+function describe(cfg) {
+  if (!cfg) return "—";
+  return String(cfg.mode).toUpperCase() + " · " + cfg.symbol + " · stake " + Number(cfg.lot_size).toFixed(2) +
+         " · max " + cfg.max_positions + " · " + (STRATEGY_NAMES[cfg.strategy] || cfg.strategy);
+}
+
+function diffKeys(a, b) {
+  if (!a || !b) return [];
+  return CFG_KEYS.filter(function(k) {
+    var x = a[k], y = b[k];
+    if (k === "lot_size") return Math.abs(parseFloat(x) - parseFloat(y)) > 1e-9;
+    if (k === "account_id") return (x || "") !== (y || "");
+    return x !== y;
   });
 }
 
-function validatePositions() {
-  var val = parseInt(document.getElementById("positions-input").value);
-  if (isNaN(val) || val < 1) val = 1;
-  if (val > 10) val = 10;
-  document.getElementById("positions-input").value = val;
-  state.maxPositions = val;
-  updateTotalRisk();
+function refreshPending() {
+  if (!$("cfg-saved")) return;
+  var cur = getConfig();
+  $("cfg-saved").textContent   = describe(state.saved);
+  $("cfg-applied").textContent = state.botRunning && state.applied ? describe(state.applied) : "Bot not running";
+  var parts = [];
+  var unsaved = diffKeys(cur, state.saved);
+  if (unsaved.length) parts.push("Unsaved: " + unsaved.map(function(k) { return CFG_LABELS[k]; }).join(", "));
+  if (state.botRunning && state.applied) {
+    var notApplied = diffKeys(state.saved, state.applied);
+    if (notApplied.length) parts.push("Saved but not applied: " + notApplied.map(function(k) { return CFG_LABELS[k]; }).join(", "));
+  }
+  $("cfg-pending").textContent = parts.length ? parts.join(" | ") : "None";
+  $("cfg-pending-line").classList.toggle("has-pending", parts.length > 0);
 }
 
-function updateTotalRisk() {
-  var lot   = state.lotSize || 1;
-  var pos   = state.maxPositions || 1;
-  var total = Math.round(lot * pos * 100) / 100;
-  document.getElementById("total-risk-label").textContent =
-    "Max exposure: $" + lot.toFixed(2) + " × " + pos + " open trade(s) = $" + total.toFixed(2);
+function onSettingChanged() { refreshPending(); }
+
+function applyPayload(d) {
+  if (d.saved)   state.saved = d.saved;
+  state.applied = d.applied || null;
+  refreshPending();
+  updateRunningBadges();
 }
 
-// ── Update while running ─────────────────────────────────────
+function post(url, body) {
+  return fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {})
+  }).then(function(r) { return r.json().catch(function() { return { ok: false, error: "Unexpected server response" }; }); });
+}
+
+function saveSettings() {
+  post("/api/settings", getConfig()).then(function(d) {
+    if (d.ok) { applyPayload(d); showToast("Settings saved"); }
+    else showError(d.error || "Could not save settings");
+  });
+}
+
 function updateSettings() {
   if (!state.botRunning) return;
-  fetch("/api/bot/update", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lot_size: state.lotSize, max_positions: state.maxPositions }),
-  }).then(function(r) { return r.json(); }).then(function(d) {
-    if (d.ok) {
-      showToast("Settings updated ✓");
-      updateRunningBadges();
-    } else showToast("Error: " + d.error);
+  post("/api/bot/update", getConfig()).then(function(d) {
+    if (d.ok) { applyPayload(d); showToast("Changes applied to the running bot"); }
+    else showError(d.error || "Could not apply changes");
   });
 }
 
 // ── Charts ───────────────────────────────────────────────────
-// One pane per timeframe (M1 / M5) inside #chart-container; only the active pane
-// is visible. Lines drawn: EMA10 (red) and EMA20 (purple) = the strategy EMAs.
-var EMA_FAST = 10, EMA_SLOW = 20;
+function updateLegend() {
+  $("legend-a").textContent = "EMA " + state.ema.fast;
+  $("legend-b").textContent = "EMA " + state.ema.slow;
+}
 
 function initChart(tf, candles) {
-  var pane = document.getElementById("chart-" + tf);
+  var pane = $("chart-" + tf);
   if (!pane) return;
-  var ph = document.getElementById("chart-placeholder");
+  var ph = $("chart-placeholder");
   if (ph) ph.style.display = "none";
 
   if (!state.charts[tf]) {
-    var box = document.getElementById("chart-container");
+    var box = $("chart-container");
     var chart = LightweightCharts.createChart(pane, {
       width:  box.clientWidth || 600,
       height: box.clientHeight || 300,
@@ -210,14 +367,12 @@ function initChart(tf, candles) {
       borderUpColor: "#10b981", borderDownColor: "#ef4444",
       wickUpColor: "#10b981", wickDownColor: "#ef4444",
     });
-    var eFast = chart.addLineSeries({ color: "#ef4444", lineWidth: 1, title: "EMA" + EMA_FAST });
-    var eSlow = chart.addLineSeries({ color: "#a855f7", lineWidth: 1, title: "EMA" + EMA_SLOW });
+    var eFast = chart.addLineSeries({ color: "#ef4444", lineWidth: 1, title: "EMA" + state.ema.fast });
+    var eSlow = chart.addLineSeries({ color: "#a855f7", lineWidth: 1, title: "EMA" + state.ema.slow });
     state.charts[tf] = { chart: chart, cs: cs, eFast: eFast, eSlow: eSlow };
 
     if (!state.resizeObs && window.ResizeObserver) {
-      state.resizeObs = new ResizeObserver(function() {
-        Object.keys(state.charts).forEach(sizeChart);
-      });
+      state.resizeObs = new ResizeObserver(function() { Object.keys(state.charts).forEach(sizeChart); });
       state.resizeObs.observe(box);
     }
   }
@@ -225,10 +380,8 @@ function initChart(tf, candles) {
 }
 
 function sizeChart(tf) {
-  var c = state.charts[tf];
-  var box = document.getElementById("chart-container");
-  if (c && box.clientWidth > 0)
-    c.chart.applyOptions({ width: box.clientWidth, height: box.clientHeight });
+  var c = state.charts[tf], box = $("chart-container");
+  if (c && box.clientWidth > 0) c.chart.applyOptions({ width: box.clientWidth, height: box.clientHeight });
 }
 
 function populateChart(tf, candles) {
@@ -237,22 +390,20 @@ function populateChart(tf, candles) {
   c.cs.setData(candles.map(function(x) {
     return { time: x.epoch, open: +x.open, high: +x.high, low: +x.low, close: +x.close };
   }));
-  c.eFast.setData(computeEma(candles, EMA_FAST));
-  c.eSlow.setData(computeEma(candles, EMA_SLOW));
+  c.eFast.setData(computeEma(candles, state.ema.fast));
+  c.eSlow.setData(computeEma(candles, state.ema.slow));
 }
 
 function updateCandle(tf, candle) {
   var c = state.charts[tf];
   if (!c) return;
-  c.cs.update({ time: candle.epoch, open: +candle.open,
-                high: +candle.high, low: +candle.low, close: +candle.close });
+  c.cs.update({ time: candle.epoch, open: +candle.open, high: +candle.high, low: +candle.low, close: +candle.close });
   var store = state.candles[tf] || [];
-  if (store.length && store[store.length-1].epoch === candle.epoch)
-    store[store.length-1] = candle;
+  if (store.length && store[store.length - 1].epoch === candle.epoch) store[store.length - 1] = candle;
   else { store.push(candle); state.candles[tf] = store; }
-  var f = computeEma(store, EMA_FAST), sl = computeEma(store, EMA_SLOW);
-  if (f.length)  c.eFast.update(f[f.length-1]);
-  if (sl.length) c.eSlow.update(sl[sl.length-1]);
+  var f = computeEma(store, state.ema.fast), sl = computeEma(store, state.ema.slow);
+  if (f.length)  c.eFast.update(f[f.length - 1]);
+  if (sl.length) c.eSlow.update(sl[sl.length - 1]);
 }
 
 function computeEma(candles, period) {
@@ -267,236 +418,233 @@ function computeEma(candles, period) {
 
 function showChart(tf) {
   ["M1", "M5"].forEach(function(t) {
-    var pane = document.getElementById("chart-" + t);
+    var pane = $("chart-" + t);
     if (pane) pane.classList.toggle("active", t === tf);
   });
-  if (state.charts[tf]) {
-    sizeChart(tf);
-    state.charts[tf].chart.timeScale().fitContent();
-  }
+  if (state.charts[tf]) { sizeChart(tf); state.charts[tf].chart.timeScale().fitContent(); }
 }
 
 function switchChart(tf) {
   state.activeTf = tf;
-  document.querySelectorAll(".tf-tab").forEach(function(b) {
-    b.classList.toggle("active", b.textContent === tf);
-  });
+  document.querySelectorAll(".tf-tab").forEach(function(b) { b.classList.toggle("active", b.textContent === tf); });
   showChart(tf);
   if (!state.charts[tf]) showToast(tf + " chart loading...");
 }
 
 function resetCharts() {
-  Object.keys(state.charts).forEach(function(tf) {
-    try { state.charts[tf].chart.remove(); } catch (e) {}
-  });
+  Object.keys(state.charts).forEach(function(tf) { try { state.charts[tf].chart.remove(); } catch (e) {} });
   state.charts = {}; state.candles = {};
-  ["M1", "M5"].forEach(function(t) {
-    var pane = document.getElementById("chart-" + t);
-    if (pane) pane.innerHTML = "";
-  });
-  var ph = document.getElementById("chart-placeholder");
+  ["M1", "M5"].forEach(function(t) { var p = $("chart-" + t); if (p) p.innerHTML = ""; });
+  var ph = $("chart-placeholder");
   if (ph) ph.style.display = "flex";
 }
 
-// Keep sidebar/top-bar labels in sync with a symbol
 function setSymbolUI(sym) {
   if (state.symbol !== sym) resetCharts();
   state.symbol = sym;
-  document.getElementById("active-symbol-label").textContent = sym;
-  document.getElementById("active-name-label").textContent   = SYMBOL_NAMES[sym] || sym;
+  $("active-symbol-label").textContent = sym;
+  $("active-name-label").textContent   = SYMBOL_NAMES[sym] || sym;
   document.querySelectorAll(".pair-btn").forEach(function(b) {
     b.classList.toggle("active", b.getAttribute("data-symbol") === sym);
   });
 }
 
 // ── Analysis ─────────────────────────────────────────────────
-function updateAnalysis(tf, data) {
-  var dirEl   = document.getElementById(tf + "-direction");
-  var trendEl = document.getElementById(tf + "-trend");
-  if (!dirEl) return;
-  var d = data.direction;
-  dirEl.textContent = d === "NONE" ? "Consolidating" : d;
-  dirEl.className   = "tf-direction " + d.toLowerCase();
-  document.getElementById(tf + "-e21").textContent  = data.ema21;
-  document.getElementById(tf + "-e50").textContent  = data.ema50;
-  document.getElementById(tf + "-e100").textContent = data.ema100;
-  trendEl.textContent = data.trending
-    ? (d === "BUY" ? "🟢 Uptrend" : d === "SELL" ? "🔴 Downtrend" : "⚪ Flat")
-    : "⚠️ Consolidating — waiting";
-  trendEl.style.color = data.trending ? "var(--t2)" : "var(--gold)";
+function renderAnalysis(d) {
+  var L = d.labels || { a: "EMA", b: "EMA", c: "Close" };
+  ["m5", "m1"].forEach(function(tf) {
+    var data = d[tf] || { direction: "NONE", a: 0, b: 0, c: 0 };
+    $(tf + "-la").textContent = L.a; $(tf + "-lb").textContent = L.b; $(tf + "-lc").textContent = L.c;
+    $(tf + "-a").textContent = data.a; $(tf + "-b").textContent = data.b; $(tf + "-c").textContent = data.c;
+    var dir = data.direction;
+    var el = $(tf + "-direction");
+    el.textContent = dir === "BUY" ? "BULLISH" : dir === "SELL" ? "BEARISH" : "NEUTRAL";
+    el.className = "tf-direction " + dir.toLowerCase();
+    $(tf + "-trend").innerHTML = dir === "BUY" ? ic("up", "icon-green") + " Fast EMA above slow EMA"
+                              : dir === "SELL" ? ic("down", "icon-red") + " Fast EMA below slow EMA"
+                              : ic("minus") + " No clear direction";
+  });
+  if (d.strategy) $("strategy-title").textContent = d.strategy;
+  if (d.rules) {
+    var box = $("exec-rules"), status = $("exec-status");
+    box.querySelectorAll(".exec-rule.rule").forEach(function(n) { n.remove(); });
+    d.rules.forEach(function(r) {
+      var n = document.createElement("div");
+      n.className = "exec-rule rule";
+      n.innerHTML = ic("check") + " " + esc(r);
+      box.insertBefore(n, status);
+    });
+  }
 }
 
-// ── Signal Feed ──────────────────────────────────────────────
+// ── Signal feed ──────────────────────────────────────────────
 function addSignal(sig) {
-  var list = document.getElementById("signal-list");
+  var list = $("signal-list");
   var empty = list.querySelector(".empty-feed");
   if (empty) empty.remove();
-  var now  = new Date().toLocaleTimeString();
-  var el   = document.createElement("div");
-  el.className = "signal-card " + sig.direction.toLowerCase();
+  var dir = String(sig.direction).toLowerCase();
+  var el  = document.createElement("div");
+  el.className = "signal-card " + dir;
   el.innerHTML =
     '<div class="signal-header">' +
-    '<span class="signal-dir ' + sig.direction.toLowerCase() + '">' + sig.direction + '</span>' +
-    '<span class="signal-sym">' + sig.symbol + '</span>' +
-    '<span class="signal-time">' + now + '</span></div>' +
-    '<div class="signal-reason">' + sig.reason + '</div>' +
-    '<div class="signal-meta">' +
-    '<span>Lot:' + parseFloat(sig.lot_size).toFixed(2) + '</span>' +
-    '<span>$' + parseFloat(sig.stake).toFixed(2) + '</span>' +
-    '<span>Pos:' + sig.max_positions + '</span></div>';
+    '<span class="signal-dir ' + dir + '">' + ic(dir === "buy" ? "up" : "down") + " " + esc(sig.direction) + '</span>' +
+    '<span class="signal-sym">' + esc(sig.symbol) + '</span>' +
+    '<span class="signal-time">' + new Date().toLocaleTimeString() + '</span></div>' +
+    '<div class="signal-reason">' + esc(sig.reason) + '</div>' +
+    '<div class="signal-meta"><span>Stake $' + parseFloat(sig.stake).toFixed(2) + '</span>' +
+    '<span>' + (sig.taken ? "Order placed" : "Not traded: " + esc(sig.note || "")) + '</span></div>';
   list.insertBefore(el, list.firstChild);
   while (list.children.length > 25) list.removeChild(list.lastChild);
 }
 
 // ── Trades ───────────────────────────────────────────────────
 function renderTrades(trades) {
-  var list = document.getElementById("trade-list");
-  if (!trades || !trades.length) {
-    list.innerHTML = '<div class="empty-feed">No trades yet</div>'; return;
-  }
+  var list = $("trade-list");
+  if (!trades || !trades.length) { list.innerHTML = '<div class="empty-feed">No trades yet</div>'; return; }
   list.innerHTML = trades.map(function(t) {
-    var lot    = t.lot_size ? parseFloat(t.lot_size).toFixed(2) : "1.00";
-    var pnlStr = t.pnl != null ? (t.pnl >= 0 ? "+" : "") + "$" + parseFloat(t.pnl).toFixed(2) : "OPEN";
-    var pnlCls = t.pnl != null ? (t.pnl >= 0 ? "green" : "red") : "";
-    return '<div class="trade-row">' +
-      '<span class="trade-dir ' + t.direction.toLowerCase() + '">' + t.direction + '</span>' +
-      '<span class="trade-sym">' + t.symbol + '</span>' +
-      '<span class="trade-lot">L' + lot + '</span>' +
+    var done   = t.pnl != null;
+    var pnlStr = done ? (t.pnl >= 0 ? "+" : "-") + "$" + Math.abs(parseFloat(t.pnl)).toFixed(2) : "—";
+    var pnlCls = done ? (t.pnl > 0 ? "green" : t.pnl < 0 ? "red" : "") : "";
+    var tip    = t.exit_reason ? ' title="' + esc(t.exit_reason) + '"' : "";
+    return '<div class="trade-row"' + tip + '>' +
+      '<span class="trade-dir ' + esc(String(t.direction).toLowerCase()) + '">' + esc(t.direction) + '</span>' +
+      '<span class="trade-sym">' + esc(t.symbol) + '</span>' +
       '<span class="trade-stake">$' + parseFloat(t.stake).toFixed(2) + '</span>' +
       '<span class="trade-pnl ' + pnlCls + '">' + pnlStr + '</span>' +
-      '<span class="trade-status ' + t.status.toLowerCase() + '">' + t.status + '</span></div>';
+      '<span class="trade-status ' + esc(String(t.status).toLowerCase()) + '">' + esc(t.status) + '</span></div>';
   }).join("");
 }
 
 function renderStats(stats) {
-  document.getElementById("stat-total").textContent  = stats.total   || 0;
-  document.getElementById("stat-wins").textContent   = stats.wins    || 0;
-  document.getElementById("stat-losses").textContent = stats.losses  || 0;
+  $("stat-total").textContent  = stats.total  || 0;
+  $("stat-wins").textContent   = stats.wins   || 0;
+  $("stat-losses").textContent = stats.losses || 0;
   var pnl = parseFloat(stats.total_pnl || 0);
-  var el  = document.getElementById("stat-pnl");
-  el.textContent = (pnl >= 0 ? "+" : "") + "$" + pnl.toFixed(2);
+  var el  = $("stat-pnl");
+  el.textContent = (pnl >= 0 ? "+" : "-") + "$" + Math.abs(pnl).toFixed(2);
   el.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
-}
-
-// ── Status ───────────────────────────────────────────────────
-function updateStatus(s, msg) {
-  document.getElementById("status-dot").className   = "status-dot " + s;
-  document.getElementById("status-text").textContent = msg || s;
-  if (s === "running") {
-    state.botRunning = true;
-    setBotBtn(true);
-    document.getElementById("btn-update").style.display   = "block";
-    document.getElementById("running-info").style.display = "flex";
-    updateRunningBadges();
-  } else if (s === "stopped" || s === "error") {
-    state.botRunning = false;
-    setBotBtn(false);
-    document.getElementById("btn-update").style.display   = "none";
-    document.getElementById("running-info").style.display = "none";
-  }
-}
-
-function setBotBtn(running) {
-  document.getElementById("bot-btn-icon").textContent = running ? "⏹" : "▶";
-  document.getElementById("bot-btn-text").textContent = running ? "Stop Bot" : "Start Bot";
-  document.getElementById("bot-btn").classList.toggle("running", running);
-}
-
-function updateRunningBadges() {
-  document.getElementById("ri-lot").textContent  = "Lot:" + state.lotSize.toFixed(2);
-  document.getElementById("ri-pos").textContent  = "Pos:" + state.maxPositions;
-  document.getElementById("ri-mode").textContent = state.mode.toUpperCase();
-}
-
-function showError(msg) {
-  document.getElementById("error-text").textContent = "⚠️ " + msg;
-  document.getElementById("error-banner").style.display = "flex";
-}
-function dismissError() {
-  document.getElementById("error-banner").style.display = "none";
 }
 
 // ── Controls ─────────────────────────────────────────────────
 function selectPair(sym, btn) {
-  if (state.botRunning) { showToast("Stop the bot first before switching pairs."); return; }
-  state.symbol = sym;
-  document.querySelectorAll(".pair-btn").forEach(function(b) { b.classList.remove("active"); });
-  btn.classList.add("active");
-  document.getElementById("active-symbol-label").textContent = sym;
-  document.getElementById("active-name-label").textContent   = SYMBOL_NAMES[sym] || sym;
+  if (state.botRunning) { showToast("Stop the bot first to change the pair."); return; }
+  setSymbolUI(sym);
   resetCharts();
+  refreshPending();
 }
 
 function setMode(mode) {
+  if (state.botRunning && mode !== state.mode) { showToast("Stop the bot first to switch between DEMO and LIVE."); return; }
   state.mode = mode;
-  document.getElementById("btn-demo").classList.toggle("active", mode === "demo");
-  document.getElementById("btn-live").classList.toggle("active", mode === "live");
-  document.getElementById("mode-badge").textContent = mode.toUpperCase();
-  document.getElementById("mode-warning").style.display = mode === "live" ? "block" : "none";
+  $("btn-demo").classList.toggle("active", mode === "demo");
+  $("btn-live").classList.toggle("active", mode === "live");
+  $("mode-badge").textContent = mode.toUpperCase();
+  $("mode-warning").style.display = mode === "live" ? "block" : "none";
+  renderVerified(null);
+  loadAccounts();
+  refreshPending();
+}
+
+function loadAccounts() {
+  var sel = $("account-select");
+  var want = (state.saved && state.saved.account_id) || sel.value || "";
+  fetch("/api/accounts?mode=" + state.mode).then(function(r) { return r.json(); }).then(function(d) {
+    sel.innerHTML = '<option value="">Automatic (first matching account)</option>';
+    if (!d.ok) { $("account-verified").textContent = "Could not list accounts: " + d.error; return; }
+    d.accounts.forEach(function(a) {
+      var o = document.createElement("option");
+      o.value = a.account_id;
+      o.textContent = a.account_id + " · " + (a.currency || "") + " " + (a.balance != null ? parseFloat(a.balance).toFixed(2) : "");
+      sel.appendChild(o);
+    });
+    if (want) sel.value = want;
+    refreshPending();
+  }).catch(function() { $("account-verified").textContent = "Could not list accounts"; });
+}
+
+function onAccountChange() {
+  if (state.botRunning) { showToast("Stop the bot first to change the account."); $("account-select").value = (state.applied && state.applied.account_id) || ""; return; }
+  refreshPending();
 }
 
 function toggleBot() {
-  if (state.botRunning) {
-    fetch("/api/bot/stop", { method: "POST" }).then(function() {
-      state.botRunning = false;
-      setBotBtn(false);
-      updateStatus("stopped", "Bot stopped");
-      document.getElementById("btn-update").style.display   = "none";
-      document.getElementById("running-info").style.display = "none";
-      showToast("Bot stopped.");
-    });
-  } else {
-    state.lotSize      = parseFloat(document.getElementById("lot-input").value) || 1.0;
-    state.maxPositions = parseInt(document.getElementById("positions-input").value) || 1;
-    dismissError();
-    showToast("Starting on " + state.symbol + " (" + state.mode.toUpperCase() + ")...");
-    closeSidebar();
-
-    fetch("/api/bot/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        symbol:        state.symbol,
-        mode:          state.mode,
-        lot_size:      state.lotSize,
-        max_positions: state.maxPositions,
-      }),
-    }).then(function(r) { return r.json(); }).then(function(d) {
-      if (!d.ok) showError(d.error || "Could not start bot");
-    });
-  }
+  if (state.botRunning) { stopBot(); return; }
+  validateLot(); validatePositions();
+  if (state.mode === "live") { openLiveModal(); return; }
+  startBot(false);
 }
 
+function startBot(confirmLive) {
+  dismissError();
+  closeSidebar();
+  var body = getConfig();
+  if (confirmLive) body.confirm_live = true;
+  showToast("Activating on " + state.symbol + " (" + state.mode.toUpperCase() + ")...");
+  applyState("starting", "Starting bot...", "", true);
+  post("/api/bot/start", body).then(function(d) {
+    if (d.ok) { applyPayload(d); return; }
+    applyState("stopped", "Bot stopped", "", false);
+    if (d.code === "live_confirmation_required") { openLiveModal(); return; }
+    showError(d.error || "Could not start the bot");
+  });
+}
+
+function stopBot() {
+  applyState("stopping", "Stopping bot...", "", true);
+  post("/api/bot/stop").then(function(d) {
+    if (d.stopped) {
+      state.applied = null;
+      applyState("stopped", "Bot stopped", "", false);
+      showToast(d.close_on_stop ? "Bot stopped — open trades were closed" : "Bot stopped — open trades will run to expiry");
+    } else {
+      showToast("Bot is still stopping...");
+    }
+  });
+}
+
+// ── Live confirmation ────────────────────────────────────────
+function openLiveModal() {
+  var cfg = getConfig();
+  $("live-modal-stake").textContent = "$" + cfg.lot_size.toFixed(2);
+  $("live-modal-pos").textContent   = cfg.max_positions;
+  $("live-modal-check").checked = false;
+  $("live-modal-ok").disabled = true;
+  $("live-modal").classList.add("open");
+}
+function closeLiveModal() { $("live-modal").classList.remove("open"); }
+function confirmLive() { closeLiveModal(); startBot(true); }
+$("live-modal-check").addEventListener("change", function() { $("live-modal-ok").disabled = !this.checked; });
+
 // ── Init ─────────────────────────────────────────────────────
-(function() {
-  var b = document.querySelector(".pair-btn.active");
-  if (b) {
-    state.symbol = b.getAttribute("data-symbol");
-    document.getElementById("active-symbol-label").textContent = state.symbol;
-    document.getElementById("active-name-label").textContent   = SYMBOL_NAMES[state.symbol] || state.symbol;
-  }
+(function init() {
+  document.querySelectorAll("#strategy-select option").forEach(function(o) { STRATEGY_NAMES[o.value] = o.textContent; });
+  setLot(state.lotSize);
+  setPositions(state.maxPositions);
+  $("mode-warning").style.display = state.mode === "live" ? "block" : "none";
+  applyState("stopped", "Stopped", "", false);
+  refreshPending();
+
+  fetch("/api/trades").then(function(r) { return r.json(); }).then(function(d) {
+    renderTrades(d.trades); renderStats(d.stats);
+  });
+
+  fetch("/api/bot/status").then(function(r) { return r.json(); }).then(function(d) {
+    if (d.saved) state.saved = d.saved;
+    if (d.applied) state.applied = d.applied;
+    var st = d.status || {};
+    if (d.running && d.applied) {
+      // A bot is already running: show ITS pair/mode, and the saved stake/limits.
+      state.mode = d.applied.mode;
+      setSymbolUI(d.applied.symbol);
+      $("btn-demo").classList.toggle("active", state.mode === "demo");
+      $("btn-live").classList.toggle("active", state.mode === "live");
+      $("mode-warning").style.display = state.mode === "live" ? "block" : "none";
+      applyState(st.state, st.message, st.detail, true);
+      renderVerified(st.account_type, st.account_id, state.mode);
+    } else if (st.state === "error") {
+      applyState("error", st.message, st.detail, false);
+    }
+    loadAccounts();
+    refreshPending();
+  });
 })();
-
-fetch("/api/trades").then(function(r) { return r.json(); }).then(function(d) {
-  renderTrades(d.trades); renderStats(d.stats);
-});
-
-fetch("/api/bot/status").then(function(r) { return r.json(); }).then(function(d) {
-  if (d.running) {
-    state.botRunning   = true;
-    state.symbol       = d.symbol;
-    state.mode         = d.mode;
-    state.lotSize      = d.lot_size      || 1.0;
-    state.maxPositions = d.max_positions || 1;
-    setMode(d.mode);
-    document.getElementById("lot-input").value       = state.lotSize.toFixed(2);
-    document.getElementById("positions-input").value = state.maxPositions;
-    document.getElementById("active-symbol-label").textContent = d.symbol;
-    document.getElementById("active-name-label").textContent   = SYMBOL_NAMES[d.symbol] || d.symbol;
-    updateLotDisplay(); updateTotalRisk();
-    setBotBtn(true);
-    document.getElementById("btn-update").style.display   = "block";
-    document.getElementById("running-info").style.display = "flex";
-    updateStatus("running", "Running on " + d.symbol);
-  }
-});

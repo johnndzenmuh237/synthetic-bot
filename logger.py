@@ -1,11 +1,13 @@
-"""logger.py — Coloured console + rotating file logger"""
-import logging, os, sys
+"""logger.py — Coloured console + rotating file logger (secrets are redacted)"""
+import logging, os, re, sys
 from logging.handlers import RotatingFileHandler
 from config import LOG_FILE, LOG_LEVEL
 
-os.makedirs("logs", exist_ok=True)
+_log_dir = os.path.dirname(LOG_FILE)
+if _log_dir:
+    os.makedirs(_log_dir, exist_ok=True)
 
-# Windows consoles default to cp1252 and choke on symbols like "→" and "✅".
+# Windows consoles default to cp1252 and choke on non-ASCII characters.
 # Force UTF-8 (replacing anything unprintable) so logging never errors out.
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -18,6 +20,25 @@ try:
     HAS_COLOR = True
 except ImportError:
     HAS_COLOR = False
+
+
+class RedactSecrets(logging.Filter):
+    """Never let API tokens or one-time passwords reach the console or log file."""
+    _PATTERNS = [
+        (re.compile(r"pat_[A-Za-z0-9_\-]{8,}"), "pat_***"),
+        (re.compile(r"(?i)(otp=)[^&\s\"']+"), r"\1***"),
+        (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9_\-\.]{8,}"), r"\1***"),
+    ]
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+            for rx, repl in self._PATTERNS:
+                msg = rx.sub(repl, msg)
+            record.msg, record.args = msg, ()
+        except Exception:
+            pass
+        return True
 
 
 def get_logger(name="SyntheticBot"):
@@ -43,8 +64,9 @@ def get_logger(name="SyntheticBot"):
     fh.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)-8s] %(message)s", "%Y-%m-%d %H:%M:%S"))
 
-    logger.addHandler(ch)
-    logger.addHandler(fh)
+    for h in (ch, fh):
+        h.addFilter(RedactSecrets())
+        logger.addHandler(h)
     return logger
 
 

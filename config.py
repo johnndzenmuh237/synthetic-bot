@@ -96,7 +96,7 @@ STOP_LOSS_POINTS_DEFAULT = 300   # any symbol not listed above
 
 # ── Position sizing / risk ───────────────────────────────────
 RISK_PER_TRADE_PCT     = 1.0    # % of balance risked per trade
-MAX_CONSECUTIVE_LOSSES = 5      # stop trading for the day after this many losses in a row
+MAX_CONSECUTIVE_LOSSES = int(os.getenv("MAX_CONSECUTIVE_LOSSES", 5))   # stop for the day after this many losses in a row
 
 # ── Take profit — R multiples (R = initial stop-loss distance) ──
 TP1_R          = 1.5
@@ -131,26 +131,45 @@ LOT_MAX    = 100.0
 # 1 lot = $1 stake on Deriv synthetics
 LOT_TO_USD = 1.0
 
-# ── Strategy selection (SIMPLIFIED) ──────────────────────────
-# ONE rule only: EMA10 crosses EMA20 on a CLOSED M1 candle.
-#   BUY (CALL) when EMA10 crosses above EMA20, SELL (PUT) when it crosses below.
+# ── Strategies (the user picks one on the dashboard) ─────────
+STRATEGIES = {
+    "REVERSAL_SCALPER": "Reversal Scalper (EMA5/13 + RSI7)",
+    "EMA_CROSS":        "EMA Cross (EMA10/20)",
+}
+DEFAULT_STRATEGY = "REVERSAL_SCALPER"
+
+# Reversal Scalper — starting points for testing (NOT verified settings of any
+# reference bot). Override with environment variables if you want to experiment.
+REV_FAST_EMA      = int(os.getenv("REV_FAST_EMA", 5))
+REV_SLOW_EMA      = int(os.getenv("REV_SLOW_EMA", 13))
+REV_RSI_PERIOD    = int(os.getenv("REV_RSI_PERIOD", 7))
+REV_RSI_LEVEL     = float(os.getenv("REV_RSI_LEVEL", 50))
+REV_USE_M5_FILTER = os.getenv("REV_USE_M5_FILTER", "false").lower() == "true"
+MAX_SIGNAL_AGE_SEC = 150     # skip a signal if the last closed candle is older than this
+
+# What to do when a reversal signal appears while a position is LOSING:
+#   "hold"  = keep it until the contract expires (default, no panic exit)
+#   "close" = sell it at market immediately and take the loss
+LOSS_POLICIES = {
+    "hold":  "Hold losing trade until expiry",
+    "close": "Close losing trade on reversal",
+}
+DEFAULT_LOSS_POLICY = "hold"
+# Sequential reversal (default): never open the opposite direction while an
+# opposite position is still open. Set ALLOW_HEDGE=true to allow both at once.
+ALLOW_HEDGE = os.getenv("ALLOW_HEDGE", "false").lower() == "true"
+
+# EMA Cross strategy (single rule): EMA10 crosses EMA20 on a CLOSED M1 candle.
 # USE_M5_FILTER: only take the cross if the M5 EMA10/EMA20 agree with it.
-#   Set to False if you want the maximum number of trades.
-STRATEGY_MODE = "EMA_CROSS"
 USE_M5_FILTER = True
 
-# False = demo mode places REAL contracts on your Deriv DEMO account
-#         (they show up in the Deriv back office, virtual money).
-# True  = old behaviour: demo trades are only simulated inside the bot.
-SIMULATE_DEMO = False
-SIM_PAYOUT    = 0.95   # only used when SIMULATE_DEMO=True
-
 # ── Contract ─────────────────────────────────────────────────
-DURATION      = 15
-DURATION_UNIT = "m"
+DURATION      = int(os.getenv("CONTRACT_DURATION", 15))
+DURATION_UNIT = os.getenv("CONTRACT_DURATION_UNIT", "m")
 
 # ── Web ──────────────────────────────────────────────────────
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
+SECRET_KEY_IS_DEFAULT = SECRET_KEY == "dev-secret"
 # Render (and most PaaS hosts) inject PORT automatically — fall back to
 # FLASK_PORT/5000 for local development where PORT isn't set.
 FLASK_PORT = int(os.getenv("PORT", os.getenv("FLASK_PORT", 5000)))
@@ -161,6 +180,6 @@ FLASK_PORT = int(os.getenv("PORT", os.getenv("FLASK_PORT", 5000)))
 ALLOW_REGISTRATION = os.getenv("ALLOW_REGISTRATION", "true").lower() == "true"
 
 # ── Paths ────────────────────────────────────────────────────
-DB_PATH   = "data/market_data.db"
-LOG_FILE  = "logs/bot.log"
+DB_PATH   = os.getenv("DB_PATH", "data/market_data.db")
+LOG_FILE  = os.getenv("LOG_FILE", "logs/bot.log")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

@@ -1,17 +1,24 @@
 """
-bot_engine.py — Core trading engine per user session (simplified EMA-cross version)
+bot_engine.py — one trading worker per user (runs on a background thread of the
+server process, completely independent of any browser/dashboard session).
 
-What was wrong in the old version (why nothing traded / no charts):
-  * Candles were keyed by the tick `epoch`, which changes on EVERY tick, so every tick
-    was stored as a new "closed candle". That corrupted the EMAs and ran the strategy per tick.
-    Now candles are keyed by Deriv's `open_time` (candle start).
-  * Strategy runs only on CLOSED M1 candles (the forming candle is never used).
-  * One trade per signal. The old code needed 2 free slots per signal while the dashboard
-    default is 1 position -> it returned before even looking for a signal.
-  * Demo mode now places real contracts on the Deriv DEMO account (config.SIMULATE_DEMO).
-  * Trades are settled from Deriv's real contract result when the contract expires.
-  * Chart snapshot can be re-sent any time (page reload, reconnect, server restart).
-  * If the live candle stream goes quiet, candles are polled as a fallback.
+Lifecycle states reported to the dashboard (always the REAL state of the worker):
+    starting | running | reconnecting | paused | stopping | stopped | error
+
+Safety rules implemented here
+  * Strategy runs only on CLOSED M1 candles, once per candle (duplicate events ignored).
+  * Stake = exactly what the user configured; position cap counts every order that
+    occupies a slot (PENDING / UNCONFIRMED / OPEN) so repeated signals, races or a
+    retry can never exceed it.
+  * An order is written to the database BEFORE it is sent. If Deriv's answer is lost
+    the order is marked UNCONFIRMED and NO new order is sent until it is reconciled
+    against Deriv (never blindly repeated).
+  * Results (win/loss/profit) come ONLY from Deriv's confirmed contract data; the
+    balance shown is the balance Deriv reports. Floating profit is shown separately
+    and never added to the balance. Closing a trade is idempotent in the database.
+  * On every (re)start and reconnect, open trades are reconciled against Deriv
+    before any new trade is considered.
+  * If Deriv rejects the token, no orders are submitted and the real reason is shown.
 """
 import asyncio
 import calendar
@@ -22,24 +29,27 @@ import pandas as pd
 from collections import defaultdict
 from typing import Dict, List
 
-from broker import DerivBroker
-from strategy import evaluate, ema_direction
+from broker import DerivBroker, OrderStatusUnknown
+from strategy import evaluate, ema_direction, prepare, strategy_info
 from risk_manager import RiskManager
 from database import (
     save_candle, save_signal,
-    open_trade, close_trade, get_open_trades,
-    get_recent_trades, get_stats,
+    open_trade, update_trade, close_trade, mark_trade,
+    get_open_trades, get_active_trades, get_reconcilable_trades,
+    get_unresolved_orders, contract_exists,
+    get_recent_trades, get_stats, get_daily_pnl, get_exposure,
 )
-from indicators import compute_emas
 from config import (
-    EXECUTION_TF, ANALYSIS_TF, TIMEFRAMES, EMA_SLOW,
-    DURATION, DURATION_UNIT, SIMULATE_DEMO, SIM_PAYOUT,
+    EXECUTION_TF, ANALYSIS_TF, TIMEFRAMES, DURATION, DURATION_UNIT,
+    DEFAULT_STRATEGY, DEFAULT_LOSS_POLICY, ALLOW_HEDGE, MAX_OPEN_TRADES,
 )
 from logger import log
 
 MAX_CANDLES_KEPT = 600
-STREAM_STALE_SEC = 30      # no live candle for this long -> poll as fallback
-SETTLE_EVERY_SEC = 30
+MIN_CANDLES      = 30        # closed candles needed before any analysis
+STREAM_STALE_SEC = 30        # no live candle for this long -> poll as fallback
+SLOW_EVERY_SEC   = 30        # reconcile + balance refresh interval
+UNRESOLVED_GRACE = 120       # seconds before an unmatched order is flagged UNRECONCILED
 
 
 def _duration_seconds():
@@ -47,53 +57,153 @@ def _duration_seconds():
     return DURATION * mult
 
 
+def _opened_at_ts(opened_at_str):
+    """Parse SQLite 'YYYY-MM-DD HH:MM:SS' (UTC) into epoch seconds."""
+    if not opened_at_str:
+        return None
+    try:
+        return calendar.timegm(time.strptime(opened_at_str, "%Y-%m-%d %H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def _num(x, default=0.0):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
 class BotSession:
     def __init__(self, user_id, symbol, mode, emit_fn,
-                 lot_size=1.0, max_positions=1):
+                 lot_size=1.0, max_positions=1,
+                 strategy=DEFAULT_STRATEGY, loss_policy=DEFAULT_LOSS_POLICY,
+                 close_on_stop=False, account_id=""):
         self.user_id       = user_id
         self.symbol        = symbol
         self.mode          = mode           # "demo" or "live"
         self.emit          = emit_fn
         self.lot_size      = float(lot_size)
         self.max_positions = int(max_positions)
+        self.strategy      = strategy
+        self.loss_policy   = loss_policy
+        self.close_on_stop = bool(close_on_stop)
+        self.account_pref  = account_id or ""
+        self.info          = strategy_info(strategy)
+
         self.running       = False
         self._stop_requested = False
-        self.broker        = DerivBroker(mode)
+        self._thread       = None
+        self.broker        = DerivBroker(mode, self.account_pref)
         self.risk          = None
         self.loop          = None
         self.candles: Dict[str, List[dict]] = defaultdict(list)
         self._lock         = None
         self._last_tick    = time.time()
-        self._last_eval_epoch = None
-        self._last_status  = ("idle", "")
+        self._last_eval_epoch  = None
+        self._last_order_epoch = None
+        self._was_disconnected = False
+
+        self.state         = "stopped"
+        self.state_msg     = "Bot not started"
+        self.state_detail  = ""
+        self.floating_pnl  = 0.0
+        self.balance_pending = False
+
+    # ── status ───────────────────────────────────────────────
+    @property
+    def alive(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def _set_state(self, state, msg, detail=""):
+        changed = (state, msg, detail) != (self.state, self.state_msg, self.state_detail)
+        self.state, self.state_msg, self.state_detail = state, msg, detail
+        if changed:
+            self._emit("bot_status", self._status_payload())
+
+    def _status_payload(self):
+        return {"state": self.state, "message": self.state_msg, "detail": self.state_detail,
+                "mode": self.mode, "account_id": self.broker.account_id,
+                "account_type": self.broker.account_type}
+
+    def applied_config(self):
+        return {"symbol": self.symbol, "mode": self.mode, "lot_size": self.lot_size,
+                "max_positions": self.max_positions, "strategy": self.strategy,
+                "loss_policy": self.loss_policy, "close_on_stop": self.close_on_stop,
+                "account_id": self.account_pref}
+
+    def status_dict(self):
+        """The REAL state of the worker (never claims 'running' unless it is)."""
+        state = self.state
+        if not self.alive:
+            state = state if state in ("stopped", "error") else ("stopped" if self._stop_requested else "error")
+        elif state in ("running", "paused") and not self._stop_requested and not self.broker.connected:
+            state = "reconnecting"
+        d = {"state": state, "message": self.state_msg, "detail": self.state_detail,
+             "worker_alive": self.alive, "connected": bool(self.broker.connected),
+             "account_id": self.broker.account_id, "account_type": self.broker.account_type,
+             "currency": self.broker.currency, "balance": self.broker.balance,
+             "balance_pending": self.balance_pending,
+             "paused_reason": self.risk.pause_reason if self.risk else ""}
+        d.update(self.applied_config())
+        return d
 
     # ── lifecycle ────────────────────────────────────────────
     def start(self):
+        if self.alive:
+            raise RuntimeError("A worker is already running for this bot — refusing to start a duplicate")
         self.running = True
         self._stop_requested = False
-        t = threading.Thread(target=self._run_loop, daemon=True)
-        t.start()
-        log.info("Bot started | user=%s symbol=%s mode=%s lot=%.2f maxpos=%d",
-                 self.user_id, self.symbol, self.mode,
+        self._set_state("starting", "Starting bot...")
+        self._thread = threading.Thread(target=self._run_loop, daemon=True,
+                                        name="bot-user-{}".format(self.user_id))
+        self._thread.start()
+        log.info("Bot started | user=%s symbol=%s mode=%s strategy=%s stake=%.2f maxpos=%d",
+                 self.user_id, self.symbol, self.mode, self.strategy,
                  self.lot_size, self.max_positions)
 
-    def stop(self):
+    def stop(self, wait=True, timeout=25):
+        """Stop policy: no new entries immediately; open contracts are left to run to
+        expiry (and are reconciled on the next start) unless the user enabled
+        'close open trades on stop'."""
         self._stop_requested = True
-        self.running = False
-        if self.loop and self.loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                self.broker.disconnect(), self.loop)
+        self._set_state("stopping", "Stopping bot...")
+        loop = self.loop
+        if loop is not None and loop.is_running():
+            try:
+                if self.close_on_stop:
+                    asyncio.run_coroutine_threadsafe(
+                        self._close_all_open("Closed because the bot was stopped"), loop).result(timeout=20)
+                asyncio.run_coroutine_threadsafe(self._final_reconcile(), loop).result(timeout=15)
+            except Exception as e:
+                log.error("Stop sequence error: %s", e)
+            self.running = False
+            try:
+                asyncio.run_coroutine_threadsafe(self.broker.disconnect(), loop)
+            except Exception:
+                pass
+        else:
+            self.running = False
+        if wait and self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout)
+        if not self.alive:
+            self._set_state("stopped", "Bot stopped")
         log.info("Bot stopped | user=%s symbol=%s", self.user_id, self.symbol)
 
-    def update_settings(self, lot_size=None, max_positions=None):
+    def update_settings(self, lot_size=None, max_positions=None, loss_policy=None, close_on_stop=None):
+        """Apply validated changes to the RUNNING bot; used for the next order onwards."""
         if lot_size is not None:
             self.lot_size = float(lot_size)
         if max_positions is not None:
-            self.max_positions = int(max_positions)
+            self.max_positions = max(1, min(int(max_positions), MAX_OPEN_TRADES))
+        if loss_policy is not None:
+            self.loss_policy = loss_policy
+        if close_on_stop is not None:
+            self.close_on_stop = bool(close_on_stop)
         if self.risk:
             self.risk.update_settings(lot_size, max_positions)
-        log.info("Settings updated | lot=%.2f maxpos=%d",
-                 self.lot_size, self.max_positions)
+        log.info("Settings applied | stake=%.2f maxpos=%d loss_policy=%s close_on_stop=%s",
+                 self.lot_size, self.max_positions, self.loss_policy, self.close_on_stop)
 
     def _run_loop(self):
         """Self-healing loop: retries with backoff until stop() is called."""
@@ -101,16 +211,16 @@ class BotSession:
         while not self._stop_requested:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
+            detail = ""
             try:
                 self.loop.run_until_complete(self._main())
                 backoff = 5
             except ConnectionError as e:
-                log.error("Connection error: %s", e)
-                self._emit_status("error", str(e))
+                detail = str(e) or "Connection error"
+                log.error("Connection error: %s", detail)
             except Exception as e:
                 detail = str(e) or repr(e) or type(e).__name__
                 log.error("Bot session error: %s", detail, exc_info=True)
-                self._emit_status("error", "Bot error: {}".format(detail))
             finally:
                 try:
                     self.loop.close()
@@ -120,76 +230,121 @@ class BotSession:
             if self._stop_requested:
                 break
 
-            log.warning("Bot loop ended unexpectedly — auto-restarting in %ds...", backoff)
-            self._emit_status("reconnecting",
-                "Bot hit an error — retrying in {}s...".format(backoff))
-            time.sleep(backoff)
+            if detail:
+                self._set_state("error", detail, detail)
+                # Keep the REAL reason visible while we wait to retry
+                msg = "Retrying in {}s".format(backoff)
+                self._set_state("reconnecting", msg, detail)
+            else:
+                self._set_state("reconnecting", "Worker restarting in {}s".format(backoff))
+            log.warning("Bot loop ended — auto-restarting in %ds (reason: %s)", backoff, detail or "none")
+            for _ in range(backoff):
+                if self._stop_requested:
+                    break
+                time.sleep(1)
             backoff = min(backoff * 2, 60)
             self.running = True
 
         self.running = False
-        self._emit_status("stopped", "Bot stopped")
+        self._set_state("stopped", "Bot stopped")
 
     async def _main(self):
         self._lock = asyncio.Lock()
-        # Fresh broker + fresh candle state on every (re)start: the old websocket,
-        # its subscriptions and half-filled candle lists are dead after a crash.
-        self.broker = DerivBroker(self.mode)
+        # Fresh broker + candle state on every (re)start: the old socket and
+        # half-filled candle lists are dead after a crash.
+        self.broker = DerivBroker(self.mode, self.account_pref)
         self.candles = defaultdict(list)
         self._last_eval_epoch = None
+        self._was_disconnected = False
 
-        self._emit_status("connecting",
-            "Connecting to Deriv ({})...".format(self.mode.upper()))
+        self._set_state("starting", "Connecting to Deriv ({})...".format(self.mode.upper()))
         await self.broker.connect(self._on_candle_tick)
 
+        # Verify the REAL account type reported by Deriv before anything else.
+        expected = "real" if self.mode == "live" else "demo"
+        if self.broker.account_type != expected:
+            await self.broker.disconnect()
+            raise ConnectionError(
+                "Account verification failed: expected a {} account but Deriv reports '{}'. "
+                "No orders will be placed.".format(self.mode.upper(), self.broker.account_type))
+
         self.risk = RiskManager(
-            balance       = self.broker.balance,
-            user_id       = self.user_id,
-            mode          = self.mode,
-            lot_size      = self.lot_size,
-            max_positions = self.max_positions,
-        )
-        self._emit_status("connected",
-            "Connected | {} | Balance: {:.2f} {}".format(
-                self.broker.account_id, self.broker.balance, self.broker.currency))
-        self._emit_balance(self.broker.balance)
+            balance=self.broker.balance, user_id=self.user_id, mode=self.mode,
+            lot_size=self.lot_size, max_positions=self.max_positions)
+        self._emit_balance()
 
         await self._load_history()
-
         for tf in [EXECUTION_TF] + ANALYSIS_TF:
             await self.broker.subscribe_candles(self.symbol, tf)
         self._last_tick = time.time()
 
-        self._emit_status("running",
-            "Bot running | {} | {} | Stake cap: {:.2f} | Max open: {}".format(
-                self.symbol, self.mode.upper(), self.lot_size, self.max_positions))
-        self._emit_trade_update()
+        # Reconcile with the platform BEFORE any new trade is considered.
+        async with self._lock:
+            await self._reconcile_trades()
+        await self._refresh_balance()
 
-        # Evaluate right away on the history we have (logs analysis, updates panels)
+        self._set_state("running", self._running_message())
+        self._emit_trade_update()
         await self._evaluate()
 
-        last_slow = 0.0
-        while self.running:
-            await asyncio.sleep(10)
-            if not self.running:
+        last_slow = time.time()
+        while self.running and not self._stop_requested:
+            for _ in range(10):
+                if not self.running or self._stop_requested:
+                    break
+                await asyncio.sleep(1)
+            if not self.running or self._stop_requested:
                 break
-            if not self.broker.connected and not self.broker._reconnecting and not self.broker._closing:
-                raise ConnectionError("Deriv connection lost")
-            now = time.time()
             try:
-                if now - self._last_tick > STREAM_STALE_SEC:
-                    log.warning("No live candles for %ds — polling candles as fallback",
-                                int(now - self._last_tick))
-                    await self._poll_candles()
-                if now - last_slow >= SETTLE_EVERY_SEC:
-                    last_slow = now
-                    bal = await self.broker.get_balance()
-                    self.risk.update_balance(bal)
-                    self._emit_balance(bal)
-                    async with self._lock:
-                        await self._settle_trades()
+                await self._housekeeping(last_slow)
+                if time.time() - last_slow >= SLOW_EVERY_SEC:
+                    last_slow = time.time()
             except Exception as e:
-                log.error("Keep-alive error: %s", e)
+                log.error("Housekeeping error: %s", e)
+
+    def _running_message(self):
+        return "Bot running | {} | {} {} | {} | Stake {:.2f} | Max open {}".format(
+            self.symbol, self.mode.upper(), self.broker.account_id,
+            self.info["title"], self.lot_size, self.max_positions)
+
+    async def _housekeeping(self, last_slow):
+        now = time.time()
+        if self.broker.auth_failed:
+            raise ConnectionError("Deriv rejected the API token (expired or revoked). "
+                                  "New orders are disabled until the token is fixed.")
+        if not self.broker.connected:
+            self._was_disconnected = True
+            self._sync_state()
+            return
+        if self._was_disconnected:
+            log.info("Connection restored — resyncing candles and reconciling trades")
+            self._was_disconnected = False
+            await self._poll_candles(count=60)
+            async with self._lock:
+                await self._reconcile_trades()
+            await self._refresh_balance()
+        if now - self._last_tick > STREAM_STALE_SEC:
+            log.warning("No live candles for %ds — polling candles as fallback", int(now - self._last_tick))
+            await self._poll_candles()
+        if now - last_slow >= SLOW_EVERY_SEC:
+            async with self._lock:
+                await self._reconcile_trades()
+            await self._refresh_balance()
+        self._sync_state()
+
+    def _sync_state(self):
+        """Keep the reported state truthful: reconnecting / paused / running."""
+        if self._stop_requested:
+            return
+        if not self.broker.connected:
+            self._set_state("reconnecting", "Connection to Deriv lost — reconnecting...", self.state_detail)
+            return
+        if self.risk is not None:
+            ok, why = self.risk.check()
+            if not ok:
+                self._set_state("paused", "Paused for risk protection", why)
+                return
+        self._set_state("running", self._running_message())
 
     # ── Candle handling ──────────────────────────────────────
     @staticmethod
@@ -210,7 +365,7 @@ class BotSession:
             store[-1] = c
             return False
         if store and c["epoch"] < store[-1]["epoch"]:
-            return False                       # stale/out-of-order update
+            return False                       # stale / out-of-order update
         if store:                              # previous candle is now final -> persist
             p = store[-1]
             try:
@@ -223,7 +378,7 @@ class BotSession:
         return True
 
     async def _load_history(self):
-        self._emit_status("loading", "Loading chart data for {}...".format(self.symbol))
+        self._set_state("starting", "Loading market data for {}...".format(self.symbol))
         for tf in [EXECUTION_TF] + ANALYSIS_TF:
             raw = await self.broker.get_candles(self.symbol, tf)
             if not raw:
@@ -241,7 +396,7 @@ class BotSession:
                         float(c["low"]),  float(c["close"]))
 
     def _on_candle_tick(self, ohlc):
-        """Called for every live `ohlc` message from Deriv (runs on the bot's event loop)."""
+        """Called for every live `ohlc` message from Deriv (on the bot's event loop)."""
         try:
             symbol = (ohlc.get("symbol") or ohlc.get("underlying_symbol")
                       or ohlc.get("underlying") or self.symbol)
@@ -267,15 +422,14 @@ class BotSession:
         except Exception as e:
             log.error("Candle tick error: %s", e)
 
-    async def _poll_candles(self):
-        """Fallback if the live stream is silent: pull the latest candles directly."""
+    async def _poll_candles(self, count=5):
+        """Pull the latest candles directly (fallback / resync after a reconnect)."""
         new_m1 = False
         for tf in [EXECUTION_TF] + ANALYSIS_TF:
-            raw = await self.broker.get_candles(self.symbol, tf, count=5)
+            raw = await self.broker.get_candles(self.symbol, tf, count=count)
             for r in raw or []:
                 c = self._clean(r)
-                is_new = self._ingest(tf, c)
-                if is_new and tf == EXECUTION_TF:
+                if self._ingest(tf, c) and tf == EXECUTION_TF:
                     new_m1 = True
             if raw:
                 self._emit_candle_update(tf, self.candles[tf][-1])
@@ -283,7 +437,14 @@ class BotSession:
         if new_m1:
             await self._evaluate()
 
-    # ── Strategy ─────────────────────────────────────────────
+    def _df(self, tf):
+        """CLOSED candles only (the last stored item is still forming)."""
+        closed = self.candles.get(tf, [])[:-1]
+        if len(closed) < MIN_CANDLES:
+            return None
+        return pd.DataFrame(closed, columns=["epoch", "open", "high", "low", "close"])
+
+    # ── Strategy / entries ───────────────────────────────────
     async def _evaluate(self):
         try:
             async with self._lock:
@@ -298,138 +459,300 @@ class BotSession:
             return
         closed_epoch = int(m1.iloc[-1]["epoch"])
         if closed_epoch == self._last_eval_epoch:
-            return                               # already handled this closed candle
+            return                               # this closed candle was already handled
         self._last_eval_epoch = closed_epoch
 
         self._emit_analysis(m5, m1)
-        await self._settle_trades()
-
-        if not self.risk.can_trade():
-            return
-        if self.risk.positions_available() < 1:
+        await self._reconcile_trades()
+        self._sync_state()
+        if self._stop_requested or not self.broker.connected or self.broker.auth_failed:
             return
 
-        signal = evaluate(m5, m1, self.symbol)
+        signal = evaluate(m5, m1, self.symbol, self.strategy)
         if signal is None:
             return
+        try:
+            save_signal(self.symbol, EXECUTION_TF, signal.direction,
+                        signal.ema_fast, signal.ema_slow, signal.rsi or 0.0, signal.close_price)
+        except Exception as e:
+            log.error("save_signal error: %s", e)
 
-        save_signal(self.symbol, EXECUTION_TF, signal.direction,
-                    signal.ema_fast, signal.ema_slow, 0.0, signal.close_price)
+        # Profit-first sequential reversal: manage the opposite position first.
+        if self.strategy == "REVERSAL_SCALPER":
+            await self._reversal_exits(signal)
 
-        stake = self.risk.get_stake()
-        self.emit("signal", {
-            "symbol":        self.symbol,
-            "direction":     signal.direction,
-            "price":         signal.close_price,
-            "stake":         stake,
-            "lot_size":      self.lot_size,
-            "max_positions": self.max_positions,
-            "reason":        signal.reason,
-        })
+        ok, why = self._entry_allowed(signal, closed_epoch)
+        if not ok:
+            log.info("Signal %s not traded: %s", signal.direction, why)
+            self._emit_signal(signal, False, why)
+            return
 
-        if self.mode == "demo" and SIMULATE_DEMO:
-            contract_id = "DEMO_{}".format(uuid.uuid4().hex[:12])
-            log.info("SIMULATED TRADE | %s %s | Stake=$%.2f", signal.direction, self.symbol, stake)
-        else:
-            contract = await self.broker.place_trade(self.symbol, signal.direction, stake)
-            if not contract:
-                msg = "Trade NOT placed: {}".format(self.broker.last_error or "unknown error")
-                log.error(msg)
-                self.emit("trade_error", {"message": msg})
-                return
-            contract_id = str(contract.get("contract_id", ""))
+        stake, err = self.risk.stake_checked()
+        if err:
+            log.error("Order refused: %s", err)
+            self._emit("trade_error", {"message": "Order refused: " + err})
+            self._emit_signal(signal, False, err)
+            return
 
-        open_trade(
-            user_id=self.user_id, symbol=self.symbol,
-            direction=signal.direction, lot_size=self.lot_size,
-            stake=stake, entry=signal.close_price, sl=0, tp=0,
-            contract_id=contract_id, mode=self.mode, position_num=1,
-            trade_group=uuid.uuid4().hex[:12], target_price=0, r_distance=0,
-        )
-
-        bal = await self.broker.get_balance()
-        self.risk.update_balance(bal)
-        self._emit_balance(bal)
+        self._last_order_epoch = closed_epoch
+        opened = await self._open_position(signal, stake)
+        self._emit_signal(signal, opened, "" if opened else "Order not placed")
+        await self._refresh_balance()
         self._emit_trade_update()
 
-    # ── Settlement ───────────────────────────────────────────
-    async def _settle_trades(self):
-        """Close trades whose contract has expired, using Deriv's real result."""
-        now = time.time()
-        dur = _duration_seconds()
-        changed = False
+    def _entry_allowed(self, signal, closed_epoch):
+        """Every gate that must pass before an order may be sent. -> (ok, reason)"""
+        if self._stop_requested or not self.running:
+            return False, "Bot is stopping"
+        if not self.broker.connected or self.broker.auth_failed:
+            return False, "Not connected to Deriv"
+        if get_unresolved_orders(self.user_id, self.mode):
+            return False, "Waiting to reconcile an earlier order of unknown status"
+        ok, why = self.risk.check()
+        if not ok:
+            return False, why
+        if self._last_order_epoch == closed_epoch:
+            return False, "An order was already sent for this candle"
+        if self.risk.positions_available() < 1:
+            return False, "Position limit reached ({}/{})".format(
+                self.risk.positions_open(), self.max_positions)
+        if not ALLOW_HEDGE:
+            for t in get_active_trades(self.user_id, self.mode):
+                if t["symbol"] == self.symbol and t["direction"] != signal.direction:
+                    return False, "An opposite {} position is still open".format(t["direction"])
+        return True, ""
 
+    async def _open_position(self, signal, stake):
+        """Write the order to the DB first, then send it. Returns True if confirmed open."""
+        tid = open_trade(
+            user_id=self.user_id, symbol=self.symbol, direction=signal.direction,
+            lot_size=self.lot_size, stake=stake, entry=signal.close_price, sl=0, tp=0,
+            contract_id="", mode=self.mode, position_num=1,
+            trade_group=uuid.uuid4().hex[:12], target_price=0, r_distance=0,
+            status="PENDING", account_id=self.broker.account_id, strategy=signal.strategy)
+        try:
+            contract = await self.broker.place_trade(self.symbol, signal.direction, stake)
+        except OrderStatusUnknown as e:
+            mark_trade(tid, "UNCONFIRMED", str(e))
+            msg = ("Order status unknown ({}). New orders are paused until it is reconciled "
+                   "with Deriv.".format(e))
+            log.error(msg)
+            self._emit("trade_error", {"message": msg})
+            return False
+        except Exception as e:          # anything unexpected: treat as unknown, never retry blindly
+            mark_trade(tid, "UNCONFIRMED", "Unexpected error: {}".format(e))
+            log.error("Unexpected error while ordering: %s", e, exc_info=True)
+            self._emit("trade_error", {"message": "Unexpected error while placing the order — "
+                                                   "it will be reconciled before any new order."})
+            return False
+
+        if not contract:
+            reason = self.broker.last_error or "unknown error"
+            mark_trade(tid, "REJECTED", reason)
+            msg = "Trade NOT placed: {}".format(reason)
+            log.error(msg)
+            self._emit("trade_error", {"message": msg})
+            return False
+
+        cid = str(contract.get("contract_id", ""))
+        buy_price = _num(contract.get("buy_price"), stake)
+        if not update_trade(tid, contract_id=cid, status="OPEN", buy_price=buy_price):
+            mark_trade(tid, "UNCONFIRMED", "Contract {} could not be recorded".format(cid))
+            log.error("Contract %s opened on Deriv but could not be recorded — flagged UNCONFIRMED", cid)
+            return False
+        if contract.get("balance_after") is not None:
+            self.broker.balance = _num(contract["balance_after"], self.broker.balance)
+            self.risk.update_balance(self.broker.balance)
+        return True
+
+    # ── Reversal exits ───────────────────────────────────────
+    async def _reversal_exits(self, signal):
         for t in get_open_trades(self.user_id, self.mode):
-            opened = self._opened_at_ts(t["opened_at"])
-            if not opened:
+            if t["symbol"] != self.symbol or t["direction"] == signal.direction:
                 continue
-            age = now - opened
-            if age < dur:
-                continue
+            info = await self.broker.get_contract(t["contract_id"])
+            if not info or info.get("is_sold"):
+                continue                                   # reconcile will settle it
+            profit = _num(info.get("profit"))
+            if profit > 0:
+                await self._sell_position(t, "Profit taken on {} reversal signal".format(signal.direction))
+            elif self.loss_policy == "close":
+                await self._sell_position(t, "Loss closed on {} reversal (policy: close)".format(signal.direction))
+            else:
+                log.info("Reversal signal while trade #%s is losing (%.2f): holding to expiry (policy: hold)",
+                         t["id"], profit)
 
-            cid    = str(t["contract_id"] or "")
-            entry  = float(t["entry_price"] or 0)
-            stake  = float(t["stake"] or 0)
-            exit_p, pnl = entry, None
+    async def _sell_position(self, t, reason):
+        """Sell at market, then record ONLY Deriv's confirmed result."""
+        cid = str(t["contract_id"])
+        info = await self.broker.get_contract(cid)
+        if info and "is_valid_to_sell" in info and not info.get("is_valid_to_sell"):
+            log.info("Trade #%s cannot be sold early — it will run to expiry", t["id"])
+            return False
+        sold = await self.broker.close_trade(cid)
+        if not sold:
+            self._emit("trade_error", {"message": "Could not close trade #{}: {}".format(
+                t["id"], self.broker.last_error or "refused by Deriv")})
+            return False
 
-            if cid.startswith("DEMO_"):
-                if t["symbol"] != self.symbol or not self.candles["M1"]:
-                    continue
-                exit_p = float(self.candles["M1"][-1]["close"])
-                win = exit_p > entry if t["direction"] == "BUY" else exit_p < entry
-                pnl = round(stake * SIM_PAYOUT, 2) if win else -stake
-            elif cid:
-                info = await self.broker.get_contract(cid)
-                if info and (info.get("is_sold") or info.get("status") in ("won", "lost")):
-                    pnl = float(info.get("profit", 0))
-                    exit_p = float(info.get("sell_spot") or info.get("exit_tick") or entry)
+        verify = await self.broker.get_contract(cid)
+        buy_price = _num((verify or {}).get("buy_price"), _num(t.get("buy_price"), _num(t["stake"])))
+        if verify and verify.get("is_sold"):
+            pnl = _num(verify.get("profit"))
+            sell_price = _num(verify.get("sell_price"), _num(sold.get("sold_for"), buy_price + pnl))
+        elif sold.get("sold_for") is not None:
+            sell_price = _num(sold.get("sold_for"))
+            pnl = sell_price - buy_price
+        else:
+            log.warning("Trade #%s sell sent but no confirmed result yet — reconcile will confirm", t["id"])
+            return False
+        exit_p = _num((verify or {}).get("sell_spot") or (verify or {}).get("exit_tick"), _num(t["entry_price"]))
+        recorded = self._record_close(t, pnl, exit_p, reason, sell_price)
+        if sold.get("balance_after") is not None:
+            self.broker.balance = _num(sold["balance_after"], self.broker.balance)
+            self.broker.balance_ok = True
+            if self.risk:
+                self.risk.update_balance(self.broker.balance)
+        return recorded
 
-            if pnl is None:
-                if age > dur * 3 + 120:          # can't resolve it — free the slot
-                    close_trade(t["id"], entry, 0.0, "VOID")
-                    log.warning("Trade #%s could not be resolved — marked VOID", t["id"])
-                    changed = True
-                continue
+    async def _close_all_open(self, reason):
+        async with self._lock:
+            for t in get_open_trades(self.user_id, self.mode):
+                if t["symbol"] == self.symbol:
+                    try:
+                        await self._sell_position(t, reason)
+                    except Exception as e:
+                        log.error("Could not close trade #%s on stop: %s", t["id"], e)
 
-            status = "WIN" if pnl > 0 else "LOSS"
-            close_trade(t["id"], exit_p, round(pnl, 2), status)
-            log.info("TRADE CLOSED #%s | %s | P&L %.2f", t["id"], status, pnl)
-            self.emit("trade_closed", {
-                "trade_id": t["id"], "pnl": round(pnl, 2), "status": status,
-                "reason": "Contract expired",
-            })
+    async def _final_reconcile(self):
+        async with self._lock:
+            await self._reconcile_trades()
+
+    # ── Reconciliation / accounting ──────────────────────────
+    def _record_close(self, t, pnl, exit_price, reason, sell_price=None):
+        """Persist a CONFIRMED result exactly once. Returns True only the first time."""
+        pnl = round(float(pnl), 2)
+        status = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "EVEN")
+        if not close_trade(t["id"], exit_price, pnl, status, reason, sell_price):
+            return False                                   # duplicate event: already recorded
+        log.info("TRADE CLOSED #%s | %s | P&L %.2f | %s", t["id"], status, pnl, reason)
+        self._emit("trade_closed", {"trade_id": t["id"], "pnl": pnl, "status": status, "reason": reason})
+        return True
+
+    async def _reconcile_trades(self):
+        """Match every unresolved trade with what Deriv says. Results are recorded
+        only when Deriv confirms the contract is finished."""
+        now, dur = time.time(), _duration_seconds()
+        floating, changed = 0.0, False
+
+        if await self._resolve_unconfirmed():
             changed = True
 
+        for t in get_reconcilable_trades(self.user_id, self.mode):
+            if t["status"] in ("PENDING", "UNCONFIRMED"):
+                continue
+            cid = str(t["contract_id"] or "")
+            if cid.startswith("DEMO_"):
+                mark_trade(t["id"], "VOID", "Legacy simulated trade from an old version")
+                changed = True
+                continue
+            if not cid:
+                mark_trade(t["id"], "UNRECONCILED", "No contract id recorded")
+                changed = True
+                continue
+            if not self.broker.connected:
+                continue
+
+            info = await self.broker.get_contract(cid)
+            if info and (info.get("is_sold") or info.get("status") in ("won", "lost")):
+                pnl = _num(info.get("profit"))
+                exit_p = _num(info.get("sell_spot") or info.get("exit_tick"), _num(t["entry_price"]))
+                if self._record_close(t, pnl, exit_p, "Contract expired / settled by Deriv",
+                                      _num(info.get("sell_price"), None) if info.get("sell_price") is not None else None):
+                    changed = True
+            elif info:
+                if t["status"] == "UNRECONCILED":
+                    update_trade(t["id"], status="OPEN")
+                floating += _num(info.get("profit"))
+            else:
+                opened = _opened_at_ts(t["opened_at"]) or now
+                if t["status"] == "OPEN" and now - opened > dur * 3 + 300:
+                    mark_trade(t["id"], "UNRECONCILED",
+                               "Deriv returned no data for this contract — verify in the Deriv back office")
+                    log.warning("Trade #%s could not be reconciled with Deriv", t["id"])
+                    changed = True
+
+        self.floating_pnl = round(floating, 2)
         if changed:
+            await self._refresh_balance()
             self._emit_trade_update()
 
-    @staticmethod
-    def _opened_at_ts(opened_at_str):
-        if not opened_at_str:
-            return None
+    async def _resolve_unconfirmed(self):
+        """Orders whose submission outcome is unknown: look for them in Deriv's open
+        contracts. They are attached if found, flagged UNRECONCILED if not, and never re-sent."""
+        orders = get_unresolved_orders(self.user_id, self.mode)
+        if not orders or not self.broker.connected:
+            return False
+        for t in orders:                                    # orphaned PENDING (crash mid-order)
+            if t["status"] == "PENDING":
+                mark_trade(t["id"], "UNCONFIRMED", "Bot restarted while this order was being sent")
+        portfolio = await self.broker.get_portfolio()
+        now, changed = time.time(), False
+        for t in get_unresolved_orders(self.user_id, self.mode):
+            created = _opened_at_ts(t["opened_at"]) or now
+            age = now - created
+            match = None
+            for c in portfolio or []:
+                cid = str(c.get("contract_id", ""))
+                if not cid or contract_exists(cid):
+                    continue
+                want = "CALL" if t["direction"] == "BUY" else "PUT"
+                sym = c.get("symbol") or c.get("underlying_symbol") or c.get("underlying")
+                if (c.get("contract_type") == want
+                        and (sym is None or sym == t["symbol"])
+                        and abs(_num(c.get("buy_price")) - _num(t["stake"])) < 0.02
+                        and _num(c.get("purchase_time"), created) >= created - 10):
+                    match = c
+                    break
+            if match:
+                if update_trade(t["id"], contract_id=str(match["contract_id"]), status="OPEN",
+                                buy_price=_num(match.get("buy_price"))):
+                    log.info("Order #%s reconciled: found Deriv contract %s", t["id"], match["contract_id"])
+                    changed = True
+            elif (portfolio is not None and age > UNRESOLVED_GRACE) or \
+                 (portfolio is None and age > _duration_seconds() + UNRESOLVED_GRACE):
+                mark_trade(t["id"], "UNRECONCILED",
+                           "Order not found among Deriv's open contracts — verify in the Deriv back office")
+                log.warning("Order #%s could not be matched with Deriv — flagged UNRECONCILED", t["id"])
+                changed = True
+        return changed
+
+    async def _refresh_balance(self):
+        """Authoritative balance from Deriv. If the refresh fails, say so — never invent one."""
+        if self.risk is None:
+            return
+        bal = await self.broker.get_balance()
+        self.balance_pending = not self.broker.balance_ok
+        if not self.balance_pending:
+            self.risk.update_balance(bal)
+        self._emit_balance()
+
+    # ── Dashboard events ─────────────────────────────────────
+    def _emit(self, event, payload):
         try:
-            return calendar.timegm(time.strptime(opened_at_str, "%Y-%m-%d %H:%M:%S"))
-        except ValueError:
-            return None
+            self.emit(event, payload)
+        except Exception as e:
+            log.error("emit(%s) failed: %s", event, e)
 
-    # ── DataFrame helper (CLOSED candles only) ───────────────
-    def _df(self, tf):
-        store = self.candles.get(tf, [])
-        closed = store[:-1]                     # last item is the forming candle
-        if len(closed) < EMA_SLOW + 5:
-            return None
-        df = pd.DataFrame(closed, columns=["epoch", "open", "high", "low", "close"])
-        return compute_emas(df)
-
-    # ── Snapshot for (re)connecting browsers ─────────────────
     def send_snapshot(self):
-        """Re-send everything the dashboard needs. Called when a browser connects,
-        so charts load even if the bot was started before the page was opened."""
+        """Re-send everything the dashboard needs (called when a browser connects)."""
         try:
-            state, msg = self._last_status
-            self.emit("bot_status", {"state": state, "message": msg})
+            self._emit("bot_status", self._status_payload() if self.alive else
+                       {"state": self.status_dict()["state"], "message": self.state_msg,
+                        "detail": self.state_detail, "mode": self.mode,
+                        "account_id": self.broker.account_id, "account_type": self.broker.account_type})
             if self.risk:
-                self._emit_balance(self.broker.balance)
+                self._emit_balance()
             for tf in [EXECUTION_TF] + ANALYSIS_TF:
                 c = list(self.candles.get(tf, []))
                 if c:
@@ -441,46 +764,57 @@ class BotSession:
         except Exception as e:
             log.error("Snapshot error: %s", e)
 
-    # ── Emit helpers ─────────────────────────────────────────
-    def _emit_status(self, state, msg):
-        self._last_status = (state, msg)
-        self.emit("bot_status", {"state": state, "message": msg})
-
-    def _emit_balance(self, bal):
-        self.emit("balance_update", {
-            "balance":       round(bal, 2),
-            "currency":      self.broker.currency,
-            "daily_pnl":     self.risk.daily_loss_pct() if self.risk else 0,
-            "account_id":    self.broker.account_id,
-            "lot_size":      self.lot_size,
-            "max_positions": self.max_positions,
+    def _emit_balance(self):
+        exp = get_exposure(self.user_id, self.mode)
+        bal = self.broker.balance
+        self._emit("balance_update", {
+            "balance":         round(bal, 2),
+            "currency":        self.broker.currency,
+            "balance_pending": self.balance_pending,
+            "daily_pnl":       self.risk.daily_loss_pct() if self.risk else 0,
+            "realized_today":  round(get_daily_pnl(self.user_id, self.mode), 2),
+            "realized_total":  round(float(get_stats(self.user_id, self.mode)["total_pnl"] or 0), 2),
+            "floating_pnl":    self.floating_pnl,
+            "open_positions":  exp["open_positions"],
+            "open_stake":      round(exp["open_stake"], 2),
+            "account_id":      self.broker.account_id,
+            "account_type":    self.broker.account_type,
+            "mode":            self.mode,
+            "lot_size":        self.lot_size,
+            "max_positions":   self.max_positions,
         })
 
     def _emit_candles(self, tf, candles):
-        self.emit("candles_init", {"tf": tf, "symbol": self.symbol, "candles": candles})
+        self._emit("candles_init", {"tf": tf, "symbol": self.symbol, "candles": candles,
+                                    "ema": {"fast": self.info["fast"], "slow": self.info["slow"]}})
 
     def _emit_candle_update(self, tf, candle):
-        self.emit("candle_update", {"tf": tf, "symbol": self.symbol, "candle": candle})
+        self._emit("candle_update", {"tf": tf, "symbol": self.symbol, "candle": candle})
 
     def _emit_trade_update(self):
-        self.emit("trades_update", {
-            "trades": get_recent_trades(self.user_id, 15),
-            "stats":  get_stats(self.user_id),
+        self._emit("trades_update", {
+            "trades": get_recent_trades(self.user_id, 15, self.mode),
+            "stats":  get_stats(self.user_id, self.mode),
+        })
+
+    def _emit_signal(self, signal, taken, note=""):
+        self._emit("signal", {
+            "symbol": self.symbol, "direction": signal.direction, "price": signal.close_price,
+            "stake": self.lot_size, "lot_size": self.lot_size, "max_positions": self.max_positions,
+            "reason": signal.reason, "taken": bool(taken), "note": note, "strategy": signal.strategy,
         })
 
     def _emit_analysis(self, m5_df, m1_df):
-        """'h4' slot = M5 trend card, 'h1' slot = M1 entry card (dashboard.js keys)."""
         def card(df):
             if df is None:
-                return {"direction": "NONE", "trending": False,
-                        "ema21": 0, "ema50": 0, "ema100": 0, "close": 0}
-            last = df.iloc[-1]
-            d = ema_direction(df)
-            return {
-                "direction": d, "trending": d != "NONE",
-                "ema21":  round(float(last["ema_fast"]), 5),
-                "ema50":  round(float(last["ema_slow"]), 5),
-                "ema100": round(float(last["close"]), 5),
-                "close":  round(float(last["close"]), 5),
-            }
-        self.emit("analysis_update", {"h4": card(m5_df), "h1": card(m1_df)})
+                return {"direction": "NONE", "a": 0, "b": 0, "c": 0}
+            d = prepare(df, self.strategy)
+            last = d.iloc[-1]
+            third = float(last["rsi"]) if self.info["rsi"] else float(last["close"])
+            return {"direction": ema_direction(d),
+                    "a": round(float(last["ema_fast"]), 5),
+                    "b": round(float(last["ema_slow"]), 5),
+                    "c": round(third, 2 if self.info["rsi"] else 5)}
+        self._emit("analysis_update", {"m5": card(m5_df), "m1": card(m1_df),
+                                       "labels": self.info["labels"], "rules": self.info["rules"],
+                                       "strategy": self.info["title"]})

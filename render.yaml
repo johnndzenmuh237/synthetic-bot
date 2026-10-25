@@ -1,3 +1,7 @@
+# FREE plan blueprint — good for trying the dashboard, NOT for 24/7 trading:
+#   * a free web service sleeps after ~15 min without visitors (the bot stops with it)
+#   * its disk is wiped on every deploy/restart (users, settings, trade history are lost)
+# For a bot that must keep running, use render.always-on.yaml instead (paid plan + disk).
 services:
   - type: web
     name: synthetic-bot
@@ -5,14 +9,15 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python app.py
+    healthCheckPath: /healthz
     envVars:
       - key: SECRET_KEY
-        generateValue: true       # Render generates a strong random secret for you
+        generateValue: true
       - key: DERIV_APP_ID
-        sync: false               # set manually in the Render dashboard — do not commit real values
+        sync: false
       - key: DERIV_DEMO_TOKEN
         sync: false
       - key: DERIV_LIVE_TOKEN
         sync: false
       - key: ALLOW_REGISTRATION
-        value: "true"              # flip to "false" in the Render dashboard once you've signed up
+        value: "true"              # set to "false" once your own login exists

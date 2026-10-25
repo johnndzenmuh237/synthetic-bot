@@ -1,20 +1,47 @@
-# What was fixed
+# Change summary (v2)
 
-**Why no trades were placed**
-1. Candles were keyed by the tick `epoch` (changes every tick) instead of Deriv's `open_time` -> every tick became a fake candle, EMAs were corrupted and the strategy ran on garbage.
-2. A signal needed 2 free slots (old TP1/TP2 split) but the dashboard default is 1 position -> the bot returned before ever checking the strategy.
-3. The strategy needed ~7 conditions at once (EMA stack, slope, HH/HL swings, whipsaw, M1 pullback, 50% candle body). Now ONE rule: EMA10 crosses EMA20 on a closed M1 candle (+ optional M5 filter, `USE_M5_FILTER` in config.py).
-4. Deriv's NEW API names the instrument field `underlying_symbol` (old API: `symbol`). The bot now sends the new name and automatically falls back to the old one if Deriv rejects it.
-5. Trade rejections from Deriv are now shown on the dashboard (red banner) and in logs/bot.log ("Trade NOT placed: <reason>").
+## What was wrong originally
+Charts never loaded and no trades were placed because: candles were keyed by tick time (so
+thousands of fake "candles" appeared and the strategy never saw closed candles), the strategy
+required two strict rules to line up at once, demo mode could simulate trades, and
+rejections were hidden. The Deriv tokens must also be valid (a 401 means expired/invalid).
 
-**Why charts didn't load**
-6. Charts were sent only once when the bot started. A snapshot is now sent whenever the browser connects (page open, refresh, Render wake-up, server restart).
-7. M1 and M5 charts were drawn on top of each other in one div -> one pane each.
-8. Page default pair (R_10 highlighted) did not match the JS default (R_50) so incoming candles were dropped.
-9. Candle messages that use `underlying_symbol` instead of `symbol` are accepted.
+## Backend
+* **Strategy:** Reversal Hedging Scalper (EMA5 / EMA13 / RSI7, level 50 - configurable starting
+  points, not verified-profitable settings). Signals fire only on a *fresh* trigger on a closed
+  M1 candle. EMA10/20 cross kept as an alternative. Stale data never produces a signal.
+* **Stake:** the stake you enter is the stake sent. It is never shrunk silently; if it is invalid
+  or unaffordable the order is refused with a message.
+* **Position cap:** counts every order occupying a slot (pending, unconfirmed, open).
+* **Risk:** daily-loss limit, consecutive-loss limit, zero-balance guard, aggregate exposure check.
+  Paused state is shown as "Paused for risk protection" with the reason.
+* **Accounting:** Deriv's balance is authoritative; no simulated prices/results. Realized and
+  floating P&L are separate. Results are written once (idempotent) and only when Deriv confirms.
+  Unknown results are shown as UNRECONCILED rather than guessed.
+* **Order safety:** order is saved as PENDING *before* sending. If the connection drops mid-order
+  it becomes UNCONFIRMED, no new orders are sent until it is matched with Deriv's open contracts,
+  and it is never re-sent.
+* **Accounts:** the account type reported by Deriv is verified (DEMO vs LIVE) before trading;
+  a mismatch aborts. Optional account picker. First live activation needs explicit confirmation.
+* **Worker:** runs on a server thread independent of any browser; logout/closing the tab does not
+  stop it. States: Starting, Running, Reconnecting, Paused, Stopping, Stopped, Error.
+  The applied config is stored in `bot_state`; a supervisor restarts it after a server restart
+  and never starts a duplicate. Stop leaves open contracts to expire unless "close on stop" is on.
+* **Security:** tokens stay on the server; log output redacts `pat_...`, `otp=`, bearer tokens;
+  per-user settings/trades; HttpOnly cookies; server-side validation of every setting.
 
-**Other**
-10. Demo mode now places real contracts on your Deriv DEMO account (`SIMULATE_DEMO = False` in config.py; set True for the old in-bot simulation).
-11. Trades are settled from Deriv's real result after the 15 min contract expires; unresolved ones are marked VOID so slots never get stuck.
-12. If the live candle stream goes quiet, candles are polled. A dropped connection that can't recover restarts the session with a fresh connection.
-13. MAX_CONSECUTIVE_LOSSES 2 -> 5.
+## Dashboard
+Stake and max-positions controls, mode, account, strategy, loss policy, close-on-stop,
+Saved / Applied / Pending settings display, live-confirmation dialog, realized / floating P&L,
+verified account label, error reasons. All emojis replaced with a bundled SVG icon sprite.
+
+## Database changes (automatic migration on start)
+New table `user_settings`; new columns on `bot_state` and `trades`; unique index on contract id.
+Old simulated `DEMO_` trades are marked VOID.
+
+## Tests
+`python -m unittest discover -s tests -v` (39 offline tests, mock broker, temp database).
+They do NOT contact Deriv.
+
+## Known limitations
+See DEPLOYMENT.md, "What has not been verified".

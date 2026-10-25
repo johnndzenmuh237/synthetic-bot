@@ -79,3 +79,37 @@ from inactivity and restarts. Your actual Deriv account balance and trades
 are unaffected (Deriv is the source of truth), but the dashboard's local
 history/stats would reset. Render's paid tier ($7/mo) adds a persistent
 disk you can mount at `/data` if this matters to you.
+
+
+---
+
+## v2 notes: keeping the bot running, and being honest about limits
+
+**Always-on hosting.** The worker lives inside the web process. It keeps trading when you log
+out or close the browser, but only while that process is alive.
+* Render **free** plan: sleeps after ~15 min idle and wipes its disk on every deploy, so the
+  bot stops and users/settings/history disappear. Fine for a look around, not for trading.
+* For continuous running use `render.always-on.yaml` (rename to `render.yaml`): paid plan,
+  one instance, persistent disk at `/var/data` (`DB_PATH` points there). After a restart the
+  supervisor resumes any bot that was running and reconciles open contracts before trading.
+* Keep exactly **one** instance. Two instances would run two workers for the same user.
+* Health check: `GET /healthz`.
+
+**Configuring / operating**
+1. Set `DERIV_APP_ID`, `DERIV_DEMO_TOKEN`, `DERIV_LIVE_TOKEN` (Read + Trade scopes) as environment variables.
+2. Log in, choose DEMO, pick a pair, set *Stake per trade* and *Max open positions*, press **Save Settings**.
+3. Press **Activate Bot**. Status shows Starting -> Running. Changes to stake / max positions /
+   loss policy can be applied to the running bot with **Apply Changes**; pair, mode, strategy and
+   account need Stop -> Activate.
+4. **Stop Bot** stops new entries. Open contracts run to expiry unless *Close open trades on stop* is ticked.
+5. LIVE: switch to LIVE and press Activate; tick the confirmation box the first time.
+
+**What has not been verified**
+* Nothing here was run against the real Deriv API (the test sandbox cannot reach it). Offline
+  tests use a mock broker. Start on DEMO and watch the first trades.
+* Deriv new-API details assumed from the legacy API: `portfolio` fields, early `sell` of
+  Rise/Fall contracts, `proposal_open_contract` fields. If Deriv refuses an early sell, the
+  trade just runs to expiry.
+* All registered users share the tokens in the server environment. Set `ALLOW_REGISTRATION=false`
+  after creating your login.
+* No strategy is guaranteed profitable; EMA5/13/RSI7/50 are starting parameters.

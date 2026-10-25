@@ -257,3 +257,12 @@ synthetic-bot/
 - Synthetic indices trade 24/7 — set daily limits and stick to them
 - Past performance does not guarantee future results
 ```
+
+## v2: quick start
+```
+pip install -r requirements.txt
+copy .env.example .env      (fill in tokens)
+python app.py               # http://localhost:5000
+python -m unittest discover -s tests -v    # optional offline tests
+```
+Stake and max positions are set in the dashboard sidebar. See DEPLOYMENT.md for hosting.

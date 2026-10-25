@@ -1,0 +1,32 @@
+# ALWAYS-ON blueprint (paid): the bot keeps running while nobody has the page open,
+# and the database survives deploys/restarts because it lives on a persistent disk.
+# Use ONE instance only (the worker is in-process; two instances would double-trade).
+# To use: rename this file to render.yaml (replace the free one), then push.
+services:
+  - type: web
+    name: synthetic-bot
+    runtime: python
+    plan: starter                  # paid; persistent disks are not available on free
+    numInstances: 1
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    healthCheckPath: /healthz
+    disk:
+      name: botdata
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DB_PATH
+        value: /var/data/market_data.db
+      - key: LOG_FILE
+        value: /var/data/bot.log
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DERIV_APP_ID
+        sync: false
+      - key: DERIV_DEMO_TOKEN
+        sync: false
+      - key: DERIV_LIVE_TOKEN
+        sync: false
+      - key: ALLOW_REGISTRATION
+        value: "false"

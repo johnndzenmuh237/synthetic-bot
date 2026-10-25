@@ -1,24 +1,32 @@
 """
-strategy.py — SIMPLIFIED single strategy: EMA10 / EMA20 crossover
+strategy.py — strategies the user can pick on the dashboard
 
-Runs once per CLOSED M1 candle:
-  BUY  (CALL): EMA10 crosses above EMA20 on the last closed M1 candle
-  SELL (PUT) : EMA10 crosses below EMA20 on the last closed M1 candle
-Optional M5 filter (config.USE_M5_FILTER): the M5 EMA10/EMA20 must point
-the same way as the M1 cross.
+REVERSAL_SCALPER (default)  — "Reversal Hedging Scalper", sequential version
+    Indicators (config.py, all starting points for testing): EMA5, EMA13, RSI7, level 50
+    BUY  state : EMA5 > EMA13  AND  RSI7 > 50  AND  close > EMA5
+    SELL state : EMA5 < EMA13  AND  RSI7 < 50  AND  close < EMA5
+    A signal fires only when the state CHANGES into BUY/SELL on a CLOSED M1 candle
+    (a fresh turn, or the price resuming the trend after a pullback through EMA5) —
+    never simply because a candle changed colour.
+    Exit: when the opposite signal appears, an open position that is IN PROFIT is
+    closed (sold at market), its confirmed result is recorded, and only then may
+    the opposite trade be opened. A LOSING position follows the user's loss policy
+    (hold to expiry, or close) — an opposite trade is never assumed to fix a loss.
 
-The old multi-condition ClaudeFX pullback/structure logic is still in
-indicators.py (unused) — it needed ~7 conditions to line up at once,
-which almost never happens on synthetic indices.
+EMA_CROSS — EMA10 crosses EMA20 on a closed M1 candle (optional M5 agreement).
+
+Every function works on CLOSED candles only (last row = last closed candle).
 """
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from indicators import compute_emas
+from indicators import compute_emas, compute_rsi
 from config import (
-    EMA_TREND_FAST, EMA_TREND_SLOW, USE_M5_FILTER,
-    DAILY_RESET_START_UTC, DAILY_RESET_END_UTC,
+    REV_FAST_EMA, REV_SLOW_EMA, REV_RSI_PERIOD, REV_RSI_LEVEL, REV_USE_M5_FILTER,
+    MAX_SIGNAL_AGE_SEC, EMA_TREND_FAST, EMA_TREND_SLOW, USE_M5_FILTER,
+    DAILY_RESET_START_UTC, DAILY_RESET_END_UTC, TIMEFRAMES, STRATEGIES,
 )
 from logger import log
 
@@ -31,6 +39,39 @@ class Signal:
     ema_fast:    float
     ema_slow:    float
     reason:      str
+    strategy:    str = ""
+    rsi:         Optional[float] = None
+
+
+# ── Strategy metadata (drives chart lines, dashboard labels) ──
+def strategy_info(name):
+    if name == "EMA_CROSS":
+        return {"name": name, "title": STRATEGIES.get(name, name),
+                "fast": EMA_TREND_FAST, "slow": EMA_TREND_SLOW, "rsi": None,
+                "labels": {"a": "EMA{}".format(EMA_TREND_FAST),
+                           "b": "EMA{}".format(EMA_TREND_SLOW), "c": "Close"},
+                "rules": ["Entries on closed 1-minute candles",
+                          "EMA{} crossing EMA{} triggers a trade".format(EMA_TREND_FAST, EMA_TREND_SLOW),
+                          "Contracts run until expiry"]}
+    return {"name": "REVERSAL_SCALPER", "title": STRATEGIES.get("REVERSAL_SCALPER", "Reversal Scalper"),
+            "fast": REV_FAST_EMA, "slow": REV_SLOW_EMA, "rsi": REV_RSI_PERIOD,
+            "labels": {"a": "EMA{}".format(REV_FAST_EMA), "b": "EMA{}".format(REV_SLOW_EMA),
+                       "c": "RSI{}".format(REV_RSI_PERIOD)},
+            "rules": ["Entries on closed 1-minute candles",
+                      "EMA{}/EMA{} momentum + RSI{} vs {:g}".format(
+                          REV_FAST_EMA, REV_SLOW_EMA, REV_RSI_PERIOD, REV_RSI_LEVEL),
+                      "Profit-first exit on reversal, then switch"]}
+
+
+def prepare(df, name):
+    """Add the indicator columns this strategy needs (ema_fast, ema_slow, rsi)."""
+    info = strategy_info(name)
+    d = compute_emas(df, fast=info["fast"], slow=info["slow"])
+    if info["rsi"]:
+        d = compute_rsi(d, info["rsi"])
+    else:
+        d["rsi"] = float("nan")
+    return d
 
 
 def _in_daily_reset_window(now=None):
@@ -39,8 +80,17 @@ def _in_daily_reset_window(now=None):
     return hm >= DAILY_RESET_START_UTC or hm <= DAILY_RESET_END_UTC
 
 
+def candle_is_fresh(m1_df, now=None, max_age=MAX_SIGNAL_AGE_SEC):
+    """The last CLOSED M1 candle must have closed recently (market data is current)."""
+    if m1_df is None or len(m1_df) == 0:
+        return False
+    now = time.time() if now is None else now
+    closed_at = int(m1_df.iloc[-1]["epoch"]) + TIMEFRAMES["M1"]
+    return (now - closed_at) <= max_age
+
+
 def ema_direction(df) -> str:
-    """'BUY' if EMA10 > EMA20, 'SELL' if below, else 'NONE'. df needs ema_fast/ema_slow."""
+    """'BUY' if fast EMA > slow EMA, 'SELL' if below, else 'NONE' (needs ema_fast/ema_slow)."""
     last = df.iloc[-1]
     if last["ema_fast"] > last["ema_slow"]:
         return "BUY"
@@ -49,38 +99,77 @@ def ema_direction(df) -> str:
     return "NONE"
 
 
-def evaluate(m5_df, m1_df, symbol) -> Optional[Signal]:
-    """m1_df / m5_df must contain CLOSED candles only (last row = last closed candle)."""
-    if _in_daily_reset_window():
+# ── Reversal scalper ──────────────────────────────────────────
+def reversal_state(row, level=REV_RSI_LEVEL):
+    if row["ema_fast"] > row["ema_slow"] and row["rsi"] > level and row["close"] > row["ema_fast"]:
+        return "BUY"
+    if row["ema_fast"] < row["ema_slow"] and row["rsi"] < level and row["close"] < row["ema_fast"]:
+        return "SELL"
+    return "NONE"
+
+
+def _evaluate_reversal(m5_df, m1_df, symbol):
+    need = max(REV_SLOW_EMA, REV_RSI_PERIOD) + 5
+    if m1_df is None or len(m1_df) < need:
         return None
+    d = prepare(m1_df, "REVERSAL_SCALPER")
+    last, prev = d.iloc[-1], d.iloc[-2]
+    now_state, before = reversal_state(last), reversal_state(prev)
+    if now_state == "NONE" or now_state == before:
+        return None                      # no fresh trigger on this candle
+
+    if REV_USE_M5_FILTER and m5_df is not None and len(m5_df) >= need:
+        m5dir = ema_direction(prepare(m5_df, "REVERSAL_SCALPER"))
+        if m5dir != now_state:
+            log.info("Reversal %s signal skipped — M5 trend is %s", now_state, m5dir)
+            return None
+
+    why = ("EMA{}{}EMA{} + RSI{}={:.1f} {} {:g} + close {} EMA{} (fresh {} trigger)".format(
+        REV_FAST_EMA, ">" if now_state == "BUY" else "<", REV_SLOW_EMA,
+        REV_RSI_PERIOD, float(last["rsi"]), ">" if now_state == "BUY" else "<", REV_RSI_LEVEL,
+        "above" if now_state == "BUY" else "below", REV_FAST_EMA, now_state))
+    log.info("SIGNAL %s | %s | Close=%.5f | %s", now_state, symbol, float(last["close"]), why)
+    return Signal(now_state, symbol, float(last["close"]), float(last["ema_fast"]),
+                  float(last["ema_slow"]), why, "REVERSAL_SCALPER", float(last["rsi"]))
+
+
+# ── EMA cross ─────────────────────────────────────────────────
+def _evaluate_cross(m5_df, m1_df, symbol):
     if m1_df is None or len(m1_df) < EMA_TREND_SLOW + 3:
         return None
-
-    m1 = compute_emas(m1_df, fast=EMA_TREND_FAST, slow=EMA_TREND_SLOW)
+    m1 = prepare(m1_df, "EMA_CROSS")
     prev, last = m1.iloc[-2], m1.iloc[-1]
-
-    crossed_up   = prev["ema_fast"] <= prev["ema_slow"] and last["ema_fast"] > last["ema_slow"]
-    crossed_down = prev["ema_fast"] >= prev["ema_slow"] and last["ema_fast"] < last["ema_slow"]
-    if not (crossed_up or crossed_down):
+    up   = prev["ema_fast"] <= prev["ema_slow"] and last["ema_fast"] > last["ema_slow"]
+    down = prev["ema_fast"] >= prev["ema_slow"] and last["ema_fast"] < last["ema_slow"]
+    if not (up or down):
         return None
-
-    direction = "BUY" if crossed_up else "SELL"
+    direction = "BUY" if up else "SELL"
 
     if USE_M5_FILTER:
         if m5_df is None or len(m5_df) < EMA_TREND_SLOW + 3:
             log.warning("M5 filter ON but M5 data not ready — taking the M1 cross without it")
         else:
-            m5 = compute_emas(m5_df, fast=EMA_TREND_FAST, slow=EMA_TREND_SLOW)
-            m5_dir = ema_direction(m5)
-            if m5_dir != direction:
-                log.info("M1 %s cross SKIPPED — M5 trend is %s", direction, m5_dir)
+            m5dir = ema_direction(prepare(m5_df, "EMA_CROSS"))
+            if m5dir != direction:
+                log.info("M1 %s cross SKIPPED — M5 trend is %s", direction, m5dir)
                 return None
 
-    close = float(last["close"])
-    word = "above" if crossed_up else "below"
     reason = "M1 EMA{} crossed {} EMA{}{}".format(
-        EMA_TREND_FAST, word, EMA_TREND_SLOW,
+        EMA_TREND_FAST, "above" if up else "below", EMA_TREND_SLOW,
         " | M5 trend agrees" if USE_M5_FILTER else "")
-    log.info("SIGNAL %s | %s | Close=%.5f | %s", direction, symbol, close, reason)
-    return Signal(direction, symbol, close,
-                  float(last["ema_fast"]), float(last["ema_slow"]), reason)
+    log.info("SIGNAL %s | %s | Close=%.5f | %s", direction, symbol, float(last["close"]), reason)
+    return Signal(direction, symbol, float(last["close"]), float(last["ema_fast"]),
+                  float(last["ema_slow"]), reason, "EMA_CROSS", None)
+
+
+def evaluate(m5_df, m1_df, symbol, strategy="REVERSAL_SCALPER", now=None) -> Optional[Signal]:
+    """Return a Signal for the last closed M1 candle, or None.
+    Stale data and the daily-reset window never produce a signal."""
+    if _in_daily_reset_window():
+        return None
+    if not candle_is_fresh(m1_df, now):
+        log.warning("Market data is stale — no signal evaluated")
+        return None
+    if strategy == "EMA_CROSS":
+        return _evaluate_cross(m5_df, m1_df, symbol)
+    return _evaluate_reversal(m5_df, m1_df, symbol)

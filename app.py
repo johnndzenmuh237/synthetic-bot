@@ -417,6 +417,70 @@ def api_accounts():
     return jsonify({"ok": True, "accounts": [a for a in accounts if a["account_type"] == want]})
 
 
+@app.route("/api/diagnose")
+@login_required
+def api_diagnose():
+    """Shows what THIS server has configured and what Deriv answers. Tokens are never
+    returned - only their length, first/last characters and any suspicious characters."""
+    import asyncio
+    import aiohttp
+    from config import DERIV_APP_ID, DERIV_REST_BASE
+
+    def describe(tok):
+        info = {"set": bool(tok), "length": len(tok)}
+        if tok:
+            info.update({"starts_with": tok[:4], "ends_with": tok[-4:],
+                         "starts_with_pat_": tok.startswith("pat_"),
+                         "has_whitespace_or_quotes": any(c.isspace() or c in "\"'" for c in tok),
+                         "has_non_ascii": any(ord(c) > 127 for c in tok)})
+        return info
+
+    async def probe(token):
+        if not token:
+            return {"result": "no token set on this server"}
+        headers = {"Deriv-App-ID": str(DERIV_APP_ID), "Authorization": "Bearer {}".format(token)}
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get("{}/accounts".format(DERIV_REST_BASE), headers=headers,
+                                    timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    full = await r.text()
+                    out = {"http_status": r.status}
+                    if r.status == 200:
+                        try:
+                            import json as _j
+                            out["accounts"] = [{"account_id": a.get("account_id"), "type": a.get("account_type"),
+                                                "balance": a.get("balance")}
+                                               for a in _j.loads(full).get("data", [])]
+                        except Exception:
+                            out["accounts"] = "reply received (not parsed)"
+                    else:
+                        out["deriv_reply"] = full[:400]
+                    return out
+        except Exception as e:
+            return {"result": "could not reach Deriv: {}".format(e)}
+
+    async def server_ip():
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get("https://api.ipify.org", timeout=aiohttp.ClientTimeout(total=8)) as r:
+                    return (await r.text()).strip()
+        except Exception:
+            return "unknown"
+
+    async def run():
+        return {
+            "app_id": DERIV_APP_ID,
+            "app_id_length": len(str(DERIV_APP_ID)),
+            "server_outbound_ip": await server_ip(),
+            "demo_token": describe(DERIV_DEMO_TOKEN), "demo_check": await probe(DERIV_DEMO_TOKEN),
+            "live_token": describe(DERIV_LIVE_TOKEN), "live_check": await probe(DERIV_LIVE_TOKEN),
+        }
+    try:
+        return jsonify(asyncio.run(run()))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/trades")
 @login_required
 def api_trades():

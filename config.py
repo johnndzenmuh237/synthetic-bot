@@ -5,9 +5,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Deriv API ────────────────────────────────────────────────
-DERIV_APP_ID     = os.getenv("DERIV_APP_ID", "1089")
-DERIV_DEMO_TOKEN = os.getenv("DERIV_DEMO_TOKEN", "")
-DERIV_LIVE_TOKEN = os.getenv("DERIV_LIVE_TOKEN", "")
+def _env(name, default=""):
+    """Environment value with stray spaces / line breaks / wrapping quotes removed."""
+    return (os.getenv(name, default) or "").strip().strip('"\'').strip()
+
+
+DERIV_APP_ID     = _env("DERIV_APP_ID", "1089")
+DERIV_DEMO_TOKEN = _env("DERIV_DEMO_TOKEN")
+DERIV_LIVE_TOKEN = _env("DERIV_LIVE_TOKEN")
 
 # Deriv's new-style "pat_..." Personal Access Tokens are REST Bearer
 # tokens, NOT the old WebSocket `{"authorize": token}` credential.

@@ -113,6 +113,7 @@ def init_db():
         "close_on_stop": "INTEGER DEFAULT 0",
         "account_id":    "TEXT DEFAULT ''",
         "timeframe":     "TEXT DEFAULT 'M1'",
+        "entries_hold":  "INTEGER DEFAULT 0",   # 1 = user pressed "Close All Trades" and chose to hold new entries
     }.items():
         if col not in bs_cols:
             con.execute("ALTER TABLE bot_state ADD COLUMN {} {}".format(col, coltype))
@@ -283,7 +284,17 @@ def get_bot_state(user_id):
     con.close()
     if not row:
         return None
-    return _row_to_settings(row)
+    d = _row_to_settings(row)
+    d["entries_hold"] = bool(dict(row).get("entries_hold"))
+    return d
+
+
+def set_entries_hold(user_id, hold):
+    """Remember (across restarts) that new entries are on hold because the user closed all trades."""
+    con = _conn()
+    con.execute("UPDATE bot_state SET entries_hold=? WHERE user_id=?", (1 if hold else 0, user_id))
+    con.commit()
+    con.close()
 
 
 def clear_bot_state(user_id):
@@ -302,6 +313,7 @@ def get_all_bot_states():
     for r in rows:
         d = _row_to_settings(r)
         d["user_id"] = dict(r)["user_id"]
+        d["entries_hold"] = bool(dict(r).get("entries_hold"))
         out.append(d)
     return out
 

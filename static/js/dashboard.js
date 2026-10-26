@@ -18,6 +18,7 @@ var MAX_LOT = LIMITS.max_stake || 500;
 var MAX_POS = LIMITS.max_positions || 10;
 
 var state = {
+  hold: false,
   symbol: INIT.saved.symbol || "R_50", mode: INIT.saved.mode || "demo", timeframe: INIT.saved.timeframe || "M1",
   botRunning: false, workerState: "stopped", activeTf: "M1",
   lotSize: INIT.saved.lot_size || 1.0, maxPositions: INIT.saved.max_positions || 1,
@@ -110,7 +111,15 @@ socket.on("analysis_update", function(d) { renderAnalysis(d); });
 // ── Status (always the REAL state reported by the server) ────
 var ALIVE_STATES = ["starting", "running", "reconnecting", "paused", "stopping", "error"];
 
+function setHoldUI(hold) {
+  state.hold = !!hold;
+  var show = state.hold && state.botRunning;
+  $("hold-note").style.display  = show ? "flex" : "none";
+  $("btn-resume").style.display = show ? "block" : "none";
+}
+
 function handleStatus(d) {
+  if (d.entries_hold !== undefined) state.hold = !!d.entries_hold;
   var st = d.state || "stopped";
   if (d.worker_alive === false && st === "error") { applyState("error", d.message, d.detail, false); return; }
   applyState(st, d.message, d.detail, st !== "stopped");
@@ -134,10 +143,12 @@ function applyState(st, msg, detail, alive) {
   }
   setBotBtn(state.botRunning, st === "stopping");
   $("btn-update").style.display   = state.botRunning ? "block" : "none";
+  $("btn-close-all").style.display = state.botRunning ? "block" : "none";
+  setHoldUI(state.hold);
   $("running-info").style.display = state.botRunning ? "flex" : "none";
   $("exec-status").innerHTML = ic(st === "running" ? "check" : st === "paused" ? "pause" : "clock") + " " +
-    esc(st === "running" ? "Monitoring closed M1 candles" :
-        st === "paused" ? "Paused — risk limit" :
+    esc(st === "running" ? (state.hold ? "Running - new trades on hold" : "Monitoring live " + (state.applied ? state.applied.timeframe : state.timeframe) + " candles") :
+        st === "paused" ? "Paused — risk limit (you turned limits on)" :
         st === "stopped" ? "Bot not running" : st.charAt(0).toUpperCase() + st.slice(1));
   updateRunningBadges();
   refreshPending();
@@ -309,7 +320,7 @@ function describe(cfg) {
   if (!cfg) return "—";
   return String(cfg.mode).toUpperCase() + " · " + cfg.symbol + " · stake " + Number(cfg.lot_size).toFixed(2) +
          " · max " + cfg.max_positions + " · " + (STRATEGY_NAMES[cfg.strategy] || cfg.strategy) +
-         (cfg.strategy === "CANDLE_FOLLOW" ? " · " + (cfg.timeframe || "M1") : "");
+         " · " + (cfg.timeframe || "M1");
 }
 
 function diffKeys(a, b) {
@@ -338,10 +349,8 @@ function refreshPending() {
   $("cfg-pending-line").classList.toggle("has-pending", parts.length > 0);
 }
 
-function syncTimeframeEnabled() {
-  var follow = $("strategy-select").value === "CANDLE_FOLLOW";
-  $("timeframe-select").disabled = !follow;
-  $("timeframe-select").title = follow ? "" : "The timeframe choice applies to the Candle Follow strategy";
+function syncTimeframeEnabled() {          // all three strategies follow the chosen timeframe
+  $("timeframe-select").disabled = false;
 }
 
 function onSettingChanged() { syncTimeframeEnabled(); refreshPending(); }
@@ -538,6 +547,8 @@ function renderAnalysis(d) {
       : ic("minus") + (follow ? " Inside the neutral band" : " No clear direction");
   });
   if (d.strategy) $("strategy-title").textContent = d.strategy;
+  var tfName = d.timeframe === "M5" ? "M5" : "M1";
+  $("m1-title").textContent = tfName + (d.kind === "follow" ? " Candle" : " Signal");
   if (d.rules) {
     var box = $("exec-rules"), status = $("exec-status");
     box.querySelectorAll(".exec-rule.rule").forEach(function(n) { n.remove(); });
@@ -719,6 +730,37 @@ function stopBot() {
   });
 }
 
+// ── Close All Trades / Resume Trading ────────────────────────
+function openCloseAllModal() { $("close-hold-check").checked = true; $("close-modal").classList.add("open"); }
+function closeCloseAllModal() { $("close-modal").classList.remove("open"); }
+
+function confirmCloseAll() {
+  var hold = $("close-hold-check").checked;
+  var btn = $("close-modal-ok");
+  btn.disabled = true; btn.textContent = "Closing...";
+  post("/api/bot/close_all", { hold: hold }).then(function(d) {
+    btn.disabled = false; btn.textContent = "Close All Trades";
+    closeCloseAllModal();
+    if (!d.ok) { showError(d.error || "Could not close the trades"); return; }
+    setHoldUI(d.hold);
+    if (d.remaining > 0) {
+      showError(d.remaining + " trade(s) could not be closed early (" + (d.error || "refused by Deriv") +
+                "). They will run to expiry; closed: " + d.closed + " of " + d.attempted + ".");
+    } else {
+      showToast(d.attempted ? "Closed " + d.closed + " trade(s)" + (d.hold ? " - new trades on hold" : "")
+                            : "No open trades to close" + (d.hold ? " - new trades on hold" : ""));
+    }
+    if (d.unconfirmed_orders) showToast(d.unconfirmed_orders + " order(s) still being verified with Deriv");
+  }).catch(function() { btn.disabled = false; btn.textContent = "Close All Trades"; showError("Network error while closing trades"); });
+}
+
+function resumeTrading() {
+  post("/api/bot/resume").then(function(d) {
+    if (d.ok) { setHoldUI(false); showToast("Trading resumed - new trades can open again"); }
+    else showError(d.error || "Could not resume");
+  });
+}
+
 // ── Live confirmation ────────────────────────────────────────
 function openLiveModal() {
   var cfg = getConfig();
@@ -751,6 +793,7 @@ $("live-modal-check").addEventListener("change", function() { $("live-modal-ok")
     if (d.saved) state.saved = d.saved;
     if (d.applied) state.applied = d.applied;
     var st = d.status || {};
+    if (st.entries_hold !== undefined) state.hold = !!st.entries_hold;
     if (d.running && d.applied) {
       // A bot is already running: show ITS pair/mode, and the saved stake/limits.
       state.mode = d.applied.mode;

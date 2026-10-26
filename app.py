@@ -20,7 +20,8 @@ from functools import wraps
 from database import (init_db, create_user, get_user, get_user_by_id,
                       get_recent_trades, get_stats,
                       get_settings, save_settings, set_live_confirmed,
-                      save_bot_state, get_bot_state, clear_bot_state, get_all_bot_states)
+                      save_bot_state, get_bot_state, clear_bot_state, get_all_bot_states,
+                      set_entries_hold)
 from bot_engine import BotSession
 from broker import fetch_accounts
 from config import (SECRET_KEY, SECRET_KEY_IS_DEFAULT, FLASK_PORT, SYMBOLS, MIN_STAKE, MAX_STAKE,
@@ -138,6 +139,7 @@ def _start_worker(uid, cfg):
         active_sessions[uid] = sess
         sess.start()
         save_bot_state(uid, cfg)      # persist the APPLIED config so a restart resumes this bot
+        set_entries_hold(uid, False)  # a fresh Activate always starts without a manual hold
     return True, ""
 
 
@@ -153,6 +155,7 @@ def _supervise_once():
             cfg = {k: state[k] for k in ("symbol", "mode", "lot_size", "max_positions",
                                          "strategy", "loss_policy", "close_on_stop", "account_id", "timeframe")}
             new = _make_session(uid, cfg)
+            new.entries_hold = bool(state.get("entries_hold"))
             active_sessions[uid] = new
             new.start()
             log.info("Supervisor (re)started bot for user=%s symbol=%s mode=%s", uid, cfg["symbol"], cfg["mode"])
@@ -359,6 +362,45 @@ def api_stop_bot():
     sess = active_sessions.get(uid)
     return jsonify({"ok": True, "stopped": sess is None or not sess.alive,
                     "close_on_stop": bool(sess.close_on_stop) if sess else None})
+
+
+def _live_session(uid):
+    sess = active_sessions.get(uid)
+    if not sess or not sess.alive or sess.loop is None or not sess.loop.is_running():
+        return None
+    return sess
+
+
+@app.route("/api/bot/close_all", methods=["POST"])
+@login_required
+def api_close_all():
+    """Close every open trade now. hold=true (default) also keeps new trades from opening
+    until the user presses Resume Trading."""
+    import asyncio
+    uid = session["user_id"]
+    sess = _live_session(uid)
+    if sess is None:
+        return jsonify({"ok": False, "error": "The bot is not running. Activate it first - it needs its "
+                        "Deriv connection to close trades."}), 400
+    hold = (request.get_json(silent=True) or {}).get("hold", True) is not False
+    try:
+        result = asyncio.run_coroutine_threadsafe(sess.close_all_manual(hold), sess.loop).result(timeout=45)
+    except Exception as e:
+        log.error("close_all error: %s", e)
+        return jsonify({"ok": False, "error": "Could not close the trades: {}".format(e)}), 500
+    result["ok"] = True
+    return jsonify(result)
+
+
+@app.route("/api/bot/resume", methods=["POST"])
+@login_required
+def api_resume():
+    uid = session["user_id"]
+    sess = _live_session(uid)
+    if sess is None:
+        return jsonify({"ok": False, "error": "The bot is not running."}), 400
+    sess.set_hold(False)
+    return jsonify({"ok": True, "hold": False})
 
 
 @app.route("/api/bot/update", methods=["POST"])

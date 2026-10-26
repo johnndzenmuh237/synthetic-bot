@@ -10,7 +10,7 @@ risk_manager.py — position cap, loss limits and stake validation
 """
 from config import (
     MAX_DAILY_LOSS_PCT, MIN_STAKE, MAX_STAKE, MAX_OPEN_TRADES,
-    LOT_TO_USD, MAX_CONSECUTIVE_LOSSES,
+    LOT_TO_USD, MAX_CONSECUTIVE_LOSSES, ENABLE_RISK_LIMITS,
 )
 from database import get_daily_pnl, get_active_trades, get_consecutive_losses, get_exposure
 from logger import log
@@ -40,7 +40,10 @@ class RiskManager:
 
     # ── gates ────────────────────────────────────────────────
     def check(self):
-        """(ok, reason). `reason` is '' when trading is allowed."""
+        """(ok, reason). `reason` is '' when trading is allowed.
+        The bot never pauses itself unless ENABLE_RISK_LIMITS=true is set on purpose."""
+        if not ENABLE_RISK_LIMITS:
+            return self._set("")
         if self.balance <= 0:
             return self._set("Account balance is 0 — fund the account before trading")
         pnl   = get_daily_pnl(self.user_id, self.mode)

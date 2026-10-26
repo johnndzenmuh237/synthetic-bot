@@ -304,5 +304,80 @@ class T24_Safety(unittest.TestCase):
         cfg, err = app.validate_config({"timeframe": "M15"}, base); self.assertTrue(err)
 
 
+class T25_CloseAll(unittest.TestCase):
+    def test_close_all_closes_every_trade_and_holds_new_ones(self):
+        s = make_follow(maxpos=7)
+        async def go():
+            at(s, 0, 100.5); await step(s); at(s, 6, 100.5); await step(s)
+            self.assertEqual(len(open_dirs(s)), 7)
+            res = await s.close_all_manual(hold=True)
+            self.assertEqual((res["attempted"], res["closed"], res["remaining"]), (7, 7, 0))
+            self.assertTrue(s.entries_hold)
+            placed = len(T.FakeBroker.placed)
+            at(s, 10, 100.6); await step(s); at(s, 20, 100.6); await step(s)   # still bullish and confirmed
+            self.assertEqual(len(T.FakeBroker.placed), placed)                 # nothing new while on hold
+            s.set_hold(False)                                                  # Resume Trading
+            at(s, 21, 100.6); await step(s)
+            self.assertEqual(len(open_dirs(s)), 7)                             # trades again
+        run(s, go)
+
+    def test_close_all_without_hold_keeps_trading(self):
+        s = make_follow(maxpos=2)
+        async def go():
+            at(s, 0, 100.5); await step(s); at(s, 6, 100.5); await step(s)
+            res = await s.close_all_manual(hold=False)
+            self.assertFalse(res["hold"]); self.assertEqual(res["closed"], 2)
+            at(s, 7, 100.5); await step(s)
+            self.assertEqual(len(open_dirs(s)), 2)                             # bot reopened (no hold)
+        run(s, go)
+
+    def test_one_trade_that_cannot_be_closed_does_not_stop_the_others(self):
+        s = make_follow(maxpos=4)
+        async def go():
+            at(s, 0, 100.5); await step(s); at(s, 6, 100.5); await step(s)
+            FollowBroker.fail_sell = {list(s.broker.contracts)[1]}
+            res = await s.close_all_manual(hold=True)
+            self.assertEqual((res["closed"], res["remaining"]), (3, 1))
+            self.assertTrue(res["error"])
+        run(s, go)
+
+    def test_hold_survives_restart_and_fresh_start_clears_it(self):
+        s = make_follow()
+        cfg = dict(database.DEFAULT_SETTINGS)
+        database.save_bot_state(s.user_id, cfg)
+        s.set_hold(True)
+        row = [b for b in database.get_all_bot_states() if b["user_id"] == s.user_id][0]
+        self.assertTrue(row["entries_hold"])
+        database.set_entries_hold(s.user_id, False)
+        self.assertFalse(database.get_bot_state(s.user_id)["entries_hold"])
+        database.clear_bot_state(s.user_id)
+
+    def test_routes(self):
+        import app, threading
+        c = app.app.test_client()
+        c.post("/register", data={"username": "closer", "password": "password123", "confirm_password": "password123"})
+        c.post("/login", data={"username": "closer", "password": "password123"})
+        uid = database.get_user("closer")["id"]
+        self.assertEqual(c.post("/api/bot/close_all", json={}).status_code, 400)       # no bot running
+        self.assertEqual(c.post("/api/bot/resume").status_code, 400)
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        calls = []
+        class Dummy:
+            alive = True; _stop_requested = False
+            def __init__(d): d.loop = loop
+            async def close_all_manual(d, hold): calls.append(hold); return {"attempted": 3, "closed": 3, "remaining": 0, "hold": hold, "unconfirmed_orders": 0, "error": ""}
+            def set_hold(d, hold): calls.append(("resume", hold))
+        app.active_sessions[uid] = Dummy()
+        try:
+            j = c.post("/api/bot/close_all", json={"hold": True}).get_json()
+            self.assertTrue(j["ok"]); self.assertEqual(j["closed"], 3)
+            c.post("/api/bot/close_all", json={"hold": False})
+            self.assertTrue(c.post("/api/bot/resume").get_json()["ok"])
+            self.assertEqual(calls, [True, False, ("resume", False)])
+        finally:
+            app.active_sessions.pop(uid, None); loop.call_soon_threadsafe(loop.stop)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

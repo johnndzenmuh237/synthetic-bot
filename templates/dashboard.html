@@ -55,6 +55,19 @@
 <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
 
 <!-- Live-trading confirmation -->
+<div class="modal-backdrop" id="close-modal" role="dialog" aria-modal="true" aria-labelledby="close-modal-title">
+  <div class="modal">
+    <div class="modal-title" id="close-modal-title">{{ ico('alert', 'icon-gold') }} Close all open trades?</div>
+    <p class="modal-sub">Every open trade is closed now at the current market value, win or lose. Each one is closed on its own.</p>
+    <label class="check-row"><input type="checkbox" id="close-hold-check" checked>
+      Keep new trades on hold until I press Resume Trading</label>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeCloseAllModal()">Cancel</button>
+      <button class="btn-danger" id="close-modal-ok" onclick="confirmCloseAll()">Close All Trades</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="live-modal" role="dialog" aria-modal="true" aria-labelledby="live-modal-title">
   <div class="modal">
     <div class="modal-title" id="live-modal-title">{{ ico('alert', 'icon-gold') }} Activate LIVE trading?</div>
@@ -232,6 +245,15 @@
       <button class="btn-update" id="btn-update" onclick="updateSettings()">
         {{ ico('refresh') }} Apply Changes To Running Bot
       </button>
+      <button class="btn-danger" id="btn-close-all" onclick="openCloseAllModal()" style="display:none">
+        {{ ico('x') }} Close All Trades
+      </button>
+      <div class="hold-note" id="hold-note" style="display:none">
+        {{ ico('pause') }} New trades are on hold. Open trades stay as they are until closed.
+      </div>
+      <button class="btn-secondary" id="btn-resume" onclick="resumeTrading()" style="display:none">
+        {{ ico('play') }} Resume Trading
+      </button>
     </div>
 
     <div class="sidebar-footer">
@@ -288,7 +310,7 @@
     <!-- Analysis panels -->
     <div class="info-row">
       <div class="info-card">
-        <div class="info-card-title">M5 Context</div>
+        <div class="info-card-title" id="m5-title">M5 Context</div>
         <div class="tf-direction neutral" id="m5-direction">—</div>
         <div class="tf-emas">
           <span><i id="m5-la">EMA</i>: <b id="m5-a">—</b></span>
@@ -299,7 +321,7 @@
       </div>
 
       <div class="info-card">
-        <div class="info-card-title">M1 Signal</div>
+        <div class="info-card-title" id="m1-title">M1 Signal</div>
         <div class="tf-direction neutral" id="m1-direction">—</div>
         <div class="tf-emas">
           <span><i id="m1-la">EMA</i>: <b id="m1-a">—</b></span>

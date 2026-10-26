@@ -39,7 +39,7 @@ from database import (
     open_trade, update_trade, close_trade, mark_trade,
     get_open_trades, get_active_trades, get_reconcilable_trades,
     get_unresolved_orders, contract_exists,
-    get_recent_trades, get_stats, get_daily_pnl, get_exposure,
+    get_recent_trades, get_stats, get_daily_pnl, get_exposure, set_entries_hold,
 )
 from config import (
     EXECUTION_TF, ANALYSIS_TF, TIMEFRAMES, DURATION, DURATION_UNIT,
@@ -106,6 +106,7 @@ class BotSession:
         self._follow_dirty = False
         self._last_follow_emit = 0.0
         self._pos_task     = None
+        self.entries_hold  = False     # True after "Close All Trades" + hold: no NEW trades until Resume
 
         self.running       = False
         self._stop_requested = False
@@ -140,7 +141,7 @@ class BotSession:
     def _status_payload(self):
         return {"state": self.state, "message": self.state_msg, "detail": self.state_detail,
                 "mode": self.mode, "account_id": self.broker.account_id,
-                "account_type": self.broker.account_type}
+                "account_type": self.broker.account_type, "entries_hold": self.entries_hold}
 
     def applied_config(self):
         return {"symbol": self.symbol, "mode": self.mode, "lot_size": self.lot_size,
@@ -160,7 +161,8 @@ class BotSession:
              "account_id": self.broker.account_id, "account_type": self.broker.account_type,
              "currency": self.broker.currency, "balance": self.broker.balance,
              "balance_pending": self.balance_pending,
-             "paused_reason": self.risk.pause_reason if self.risk else ""}
+             "paused_reason": self.risk.pause_reason if self.risk else "",
+             "entries_hold": self.entries_hold}
         d.update(self.applied_config())
         return d
 
@@ -220,6 +222,7 @@ class BotSession:
         if timeframe in ("M1", "M5") and timeframe != self.timeframe:
             self.timeframe = timeframe
             self.tracker.reset()               # a new timeframe needs its own confirmation
+            self._last_eval_epoch = None       # evaluate the new timeframe's last closed candle afresh
             log.info("Timeframe changed to %s", timeframe)
         if self.risk:
             self.risk.update_settings(lot_size, max_positions)
@@ -333,7 +336,8 @@ class BotSession:
                 self._pos_task = None
 
     def _running_message(self):
-        return "Bot running | {} | {} {} | {} | {} | Stake {:.2f} | Max open {}".format(
+        return "Bot running{} | {} | {} {} | {} | {} | Stake {:.2f} | Max open {}".format(
+            " - NEW TRADES ON HOLD" if self.entries_hold else "",
             self.symbol, self.mode.upper(), self.broker.account_id,
             self.info["title"], self.timeframe, self.lot_size, self.max_positions)
 
@@ -450,7 +454,7 @@ class BotSession:
             if self.strategy == "CANDLE_FOLLOW":
                 if tf == self.timeframe:
                     self._schedule_follow()          # every price update, in real time
-            elif is_new and tf == EXECUTION_TF:
+            elif is_new and tf == self.timeframe:
                 asyncio.ensure_future(self._evaluate())
         except Exception as e:
             log.error("Candle tick error: %s", e)
@@ -462,7 +466,7 @@ class BotSession:
             raw = await self.broker.get_candles(self.symbol, tf, count=count)
             for r in raw or []:
                 c = self._clean(r)
-                if self._ingest(tf, c) and tf == EXECUTION_TF:
+                if self._ingest(tf, c) and tf == self.timeframe:
                     new_m1 = True
             if raw:
                 self._emit_candle_update(tf, self.candles[tf][-1])
@@ -490,7 +494,7 @@ class BotSession:
     async def _evaluate_locked(self):
         if self.strategy == "CANDLE_FOLLOW":
             return                                   # handled live by _follow_step
-        m1 = self._df("M1")
+        m1 = self._df(self.timeframe)             # the candles of the selected timeframe (1 or 5 minutes)
         m5 = self._df("M5")
         if m1 is None:
             return
@@ -505,11 +509,11 @@ class BotSession:
         if self._stop_requested or not self.broker.connected or self.broker.auth_failed:
             return
 
-        signal = evaluate(m5, m1, self.symbol, self.strategy)
+        signal = evaluate(m5, m1, self.symbol, self.strategy, tf=self.timeframe)
         if signal is None:
             return
         try:
-            save_signal(self.symbol, EXECUTION_TF, signal.direction,
+            save_signal(self.symbol, self.timeframe, signal.direction,
                         signal.ema_fast, signal.ema_slow, signal.rsi or 0.0, signal.close_price)
         except Exception as e:
             log.error("save_signal error: %s", e)
@@ -541,6 +545,8 @@ class BotSession:
         """Every gate that must pass before an order may be sent. -> (ok, reason)"""
         if self._stop_requested or not self.running:
             return False, "Bot is stopping"
+        if self.entries_hold:
+            return False, "New trades are on hold (press Resume Trading)"
         if not self.broker.connected or self.broker.auth_failed:
             return False, "Not connected to Deriv"
         if get_unresolved_orders(self.user_id, self.mode):
@@ -571,7 +577,7 @@ class BotSession:
             contract = await self.broker.place_trade(self.symbol, signal.direction, stake)
         except OrderStatusUnknown as e:
             mark_trade(tid, "UNCONFIRMED", str(e))
-            msg = ("Order status unknown ({}). New orders are paused until it is reconciled "
+            msg = ("Order status unknown ({}). New orders wait until it is reconciled "
                    "with Deriv.".format(e))
             log.error(msg)
             self._emit("trade_error", {"message": msg})
@@ -765,6 +771,8 @@ class BotSession:
         now = time.time()
         if self._stop_requested or not self.running:
             return False, "Bot is stopping"
+        if self.entries_hold:
+            return False, "New trades are on hold (press Resume Trading)"
         if not self.broker.connected or self.broker.auth_failed:
             return False, "Not connected to Deriv"
         if now - self._last_tick > CF_MAX_TICK_AGE:
@@ -833,9 +841,58 @@ class BotSession:
             zone, opn, price, band = v
             return {"direction": zone, "a": round(opn, 5), "b": round(price, 5), "c": round(band, 5)}
         self._emit("analysis_update", {"m5": card("M5"), "m1": card("M1"),
-                                       "labels": self.info["labels"], "rules": self.info["rules"],
+                                       "labels": self.info["labels"], "rules": self._rules(),
                                        "strategy": self.info["title"], "kind": "follow",
                                        "timeframe": self.timeframe})
+
+    # ── Manual controls: Close All Trades / Resume ───────────
+    def set_hold(self, hold):
+        """Hold (or release) NEW entries. Open trades are not touched. Survives a restart."""
+        self.entries_hold = bool(hold)
+        try:
+            set_entries_hold(self.user_id, self.entries_hold)
+        except Exception as e:
+            log.error("Could not save hold state: %s", e)
+        self._set_state(self.state, self._running_message() if self.state == "running" else self.state_msg,
+                        self.state_detail)
+        self._emit("bot_status", self._status_payload())
+        log.info("New trades %s by the user", "put on hold" if hold else "resumed")
+
+    async def _manual_close(self, t, reason):
+        try:
+            return await self._sell_position(t, reason, fast=True)
+        except Exception as e:
+            log.error("Manual close of trade #%s failed: %s", t["id"], e)
+            return False
+        finally:
+            self._selling.discard(t["id"])
+
+    async def close_all_manual(self, hold=True):
+        """Close EVERY open trade now (each one on its own; one failure never stops the rest).
+        With hold=True no new trade opens until set_hold(False) (Resume Trading)."""
+        if hold:
+            self.set_hold(True)                      # first, so nothing new can open meanwhile
+        trades = list(get_open_trades(self.user_id, self.mode))
+        unconfirmed = len([t for t in get_unresolved_orders(self.user_id, self.mode)])
+        jobs = []
+        for t in trades:
+            if t["id"] in self._selling:
+                continue
+            self._selling.add(t["id"])
+            jobs.append(self._manual_close(t, "Closed manually from the dashboard"))
+        if jobs:
+            await asyncio.gather(*jobs, return_exceptions=True)
+        async with self._lock:
+            await self._reconcile_trades()           # confirm what Deriv really did
+        remaining = list(get_open_trades(self.user_id, self.mode))
+        await self._refresh_balance()
+        self._emit_trade_update()
+        self._emit_positions()
+        closed = max(0, len(trades) - len(remaining))
+        log.info("Close All: %d of %d closed, %d still open, hold=%s", closed, len(trades), len(remaining), hold)
+        return {"attempted": len(trades), "closed": closed, "remaining": len(remaining),
+                "unconfirmed_orders": unconfirmed, "hold": self.entries_hold,
+                "error": (self.broker.last_error or "Deriv refused the early close") if remaining else ""}
 
     # ── Per-position live monitoring ─────────────────────────
     async def _positions_loop(self):
@@ -1027,7 +1084,7 @@ class BotSession:
             if self.strategy == "CANDLE_FOLLOW":
                 self._emit_follow_analysis(time.time(), force=True)
             else:
-                m1, m5 = self._df("M1"), self._df("M5")
+                m1, m5 = self._df(self.timeframe), self._df("M5")
                 if m1 is not None:
                     self._emit_analysis(m5, m1)
             self._emit_trade_update()
@@ -1075,6 +1132,11 @@ class BotSession:
             "reason": signal.reason, "taken": bool(taken), "note": note, "strategy": signal.strategy,
         })
 
+    def _rules(self):
+        """Rule lines for the strategy card, worded for the selected timeframe."""
+        word = "5-minute" if self.timeframe == "M5" else "1-minute"
+        return [r.replace("1-minute", word) for r in self.info["rules"]]
+
     def _emit_analysis(self, m5_df, m1_df):
         def card(df):
             if df is None:
@@ -1087,5 +1149,5 @@ class BotSession:
                     "b": round(float(last["ema_slow"]), 5),
                     "c": round(third, 2 if self.info["rsi"] else 5)}
         self._emit("analysis_update", {"m5": card(m5_df), "m1": card(m1_df),
-                                       "labels": self.info["labels"], "rules": self.info["rules"],
-                                       "strategy": self.info["title"]})
+                                       "labels": self.info["labels"], "rules": self._rules(),
+                                       "strategy": self.info["title"], "timeframe": self.timeframe})

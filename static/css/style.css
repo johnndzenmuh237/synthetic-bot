@@ -699,3 +699,8 @@ html,body{
   .pos-row{grid-template-columns:70px 60px 1fr 70px;font-size:11px}
   .pos-row .pos-stake{display:none}
 }
+
+/* ── Close All / hold ── */
+.hold-note{display:none;align-items:center;gap:6px;margin-top:8px;padding:8px 10px;border-radius:var(--rs);
+  background:#f59e0b1a;border:1px solid var(--gold);color:var(--gold);font-size:12px;line-height:1.4}
+#close-modal .modal-actions .btn-secondary,#close-modal .modal-actions .btn-danger{margin-top:0}

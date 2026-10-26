@@ -117,6 +117,11 @@ SPIKE_WAIT_MAX_CANDLES = 10
 
 # ── Time-based rules ──────────────────────────────────────────
 MAX_HOLD_MINUTES        = 60
+# The bot never pauses by itself. These two safety switches exist but are OFF by default:
+#   ENABLE_RISK_LIMITS=true  -> daily-loss limit + losses-in-a-row limit pause trading
+#   DAILY_RESET_PAUSE=true   -> no new entries around the daily reset window below
+ENABLE_RISK_LIMITS = os.getenv("ENABLE_RISK_LIMITS", "false").lower() == "true"
+DAILY_RESET_PAUSE  = os.getenv("DAILY_RESET_PAUSE", "false").lower() == "true"
 DAILY_RESET_START_UTC   = "23:55"
 DAILY_RESET_END_UTC     = "00:05"
 

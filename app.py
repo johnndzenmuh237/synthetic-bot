@@ -8,11 +8,14 @@ any browser session: logging out / closing the tab never stops them. The running
 configuration is stored in the database (bot_state) so the supervisor restarts
 every bot that should be running after a crash or server restart.
 """
+import csv
+import io
 import math
 import threading
 import time
+from datetime import timedelta
 from flask import (Flask, render_template, request, redirect,
-                   url_for, session, jsonify, flash)
+                   url_for, session, jsonify, flash, Response)
 from flask_socketio import SocketIO, emit, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
@@ -21,17 +24,23 @@ from database import (init_db, create_user, get_user, get_user_by_id,
                       get_recent_trades, get_stats,
                       get_settings, save_settings, set_live_confirmed,
                       save_bot_state, get_bot_state, clear_bot_state, get_all_bot_states,
-                      set_entries_hold)
+                      set_entries_hold,
+                      log_activity, get_activity, get_history, get_history_summary,
+                      get_history_symbols, cloud_ready)
+from cloud_store import store as cloud
 from bot_engine import BotSession
 from broker import fetch_accounts
 from config import (SECRET_KEY, SECRET_KEY_IS_DEFAULT, FLASK_PORT, SYMBOLS, MIN_STAKE, MAX_STAKE,
                     MAX_OPEN_TRADES, ALLOW_REGISTRATION, STRATEGIES, LOSS_POLICIES,
-                    DERIV_DEMO_TOKEN, DERIV_LIVE_TOKEN, TIMEFRAME_CHOICES)
+                    DERIV_DEMO_TOKEN, DERIV_LIVE_TOKEN, TIMEFRAME_CHOICES, SESSION_DAYS)
 from logger import log
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+# Logins are permanent cookies: a user stays signed in until they press Logout (SESSION_DAYS, default ~10 years).
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+                  PERMANENT_SESSION_LIFETIME=timedelta(days=SESSION_DAYS),
+                  SESSION_REFRESH_EACH_REQUEST=True)
 if SECRET_KEY_IS_DEFAULT:
     log.warning("SECRET_KEY is not set — using an insecure default. Set SECRET_KEY in your "
                 "environment (Render: Environment tab) before exposing this app.")
@@ -194,6 +203,7 @@ def login_required(f):
         if not uid or not get_user_by_id(uid):
             session.clear()
             return redirect(url_for("login"))
+        session.permanent = True        # also upgrades logins made before this update
         return f(*args, **kwargs)
     return decorated
 
@@ -211,9 +221,13 @@ def login():
         password = request.form.get("password", "")
         user = get_user(username)
         if user and check_password_hash(user["password_hash"], password):
+            session.permanent = True
             session["user_id"]  = user["id"]
             session["username"] = user["username"]
+            log_activity(user["id"], "login", "Signed in")
             return redirect(url_for("dashboard"))
+        if user:
+            log_activity(user["id"], "login_failed", "Wrong password entered")
         flash("Invalid username or password.", "error")
     return render_template("login.html")
 
@@ -231,7 +245,9 @@ def register():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         confirm  = request.form.get("confirm_password", "")
-        if not username or not password:
+        if not cloud_ready():
+            flash("The account service is still starting up. Please try again in a minute.", "error")
+        elif not username or not password:
             flash("Username and password are required.", "error")
         elif password != confirm:
             flash("Passwords do not match.", "error")
@@ -239,6 +255,9 @@ def register():
             flash("Password must be at least 6 characters.", "error")
         else:
             if create_user(username, generate_password_hash(password)):
+                new_user = get_user(username)
+                if new_user:
+                    log_activity(new_user["id"], "register", "Account created")
                 flash("Account created! Please log in.", "success")
                 return redirect(url_for("login"))
             else:
@@ -251,6 +270,8 @@ def logout():
     # Logging out only ends the browser session — it must NOT stop the
     # trading bot. The bot keeps running server-side, exactly as it did
     # before you logged in, until you explicitly click Stop.
+    if session.get("user_id"):
+        log_activity(session["user_id"], "logout", "Signed out (bot keeps running)")
     session.clear()
     return redirect(url_for("login"))
 
@@ -313,6 +334,7 @@ def api_save_settings():
     if err:
         return jsonify({"ok": False, "error": err}), 400
     save_settings(uid, cfg)
+    log_activity(uid, "settings", _cfg_text(cfg))
     out = _settings_payload(uid)
     out["ok"] = True
     return jsonify(out)
@@ -343,6 +365,7 @@ def api_start_bot():
     ok, err = _start_worker(uid, cfg)            # applied = what the worker runs with
     if not ok:
         return jsonify({"ok": False, "error": err}), 409
+    log_activity(uid, "bot_start", _cfg_text(cfg))
     out = _settings_payload(uid)
     out["ok"] = True
     return jsonify(out)
@@ -359,6 +382,7 @@ def api_stop_bot():
             sess.stop(wait=True)
             if not sess.alive:
                 active_sessions.pop(uid, None)
+    log_activity(uid, "bot_stop", "Bot stopped by the user")
     sess = active_sessions.get(uid)
     return jsonify({"ok": True, "stopped": sess is None or not sess.alive,
                     "close_on_stop": bool(sess.close_on_stop) if sess else None})
@@ -388,6 +412,8 @@ def api_close_all():
     except Exception as e:
         log.error("close_all error: %s", e)
         return jsonify({"ok": False, "error": "Could not close the trades: {}".format(e)}), 500
+    log_activity(uid, "close_all", "Closed all open trades manually{}".format(
+        " and put new trades on hold" if hold else ""))
     result["ok"] = True
     return jsonify(result)
 
@@ -400,6 +426,7 @@ def api_resume():
     if sess is None:
         return jsonify({"ok": False, "error": "The bot is not running."}), 400
     sess.set_hold(False)
+    log_activity(uid, "resume", "Resumed trading")
     return jsonify({"ok": True, "hold": False})
 
 
@@ -428,6 +455,7 @@ def api_update_bot():
                          timeframe=cfg["timeframe"])
     save_bot_state(uid, sess.applied_config())
     save_settings(uid, sess.applied_config())
+    log_activity(uid, "bot_update", _cfg_text(sess.applied_config()))
     out = _settings_payload(uid)
     out["ok"] = True
     return jsonify(out)
@@ -542,6 +570,91 @@ def api_trades():
         "stats":  get_stats(uid, mode),
         "mode":   mode,
     })
+
+
+def _cfg_text(cfg):
+    return "{} · {} · {} · {} · stake {} · max {} trades".format(
+        cfg.get("symbol"), cfg.get("mode"), cfg.get("strategy"), cfg.get("timeframe"),
+        cfg.get("lot_size"), cfg.get("max_positions"))
+
+
+# ── History: every trade and every action, kept forever ─────
+def _hist_filters():
+    a = request.args
+    return dict(mode=a.get("mode") or None, status=a.get("status") or None,
+                symbol=a.get("symbol") or None,
+                date_from=a.get("from") or None, date_to=a.get("to") or None)
+
+
+@app.route("/history")
+@login_required
+def history_page():
+    uid = session["user_id"]
+    return render_template("history.html", username=get_user_by_id(uid)["username"],
+                           symbols=SYMBOLS, used_symbols=get_history_symbols(uid),
+                           mode=get_settings(uid)["mode"])
+
+
+@app.route("/api/history")
+@login_required
+def api_history():
+    uid = session["user_id"]
+    page = max(1, request.args.get("page", 1, type=int))
+    per = min(200, max(1, request.args.get("per", 50, type=int)))
+    rows, total, totals = get_history(uid, limit=per, offset=(page - 1) * per, **_hist_filters())
+    return jsonify({"trades": rows, "total": total, "totals": totals, "page": page, "per": per,
+                    "pages": max(1, math.ceil(total / float(per)))})
+
+
+@app.route("/api/history/summary")
+@login_required
+def api_history_summary():
+    uid = session["user_id"]
+    period = request.args.get("period", "day")
+    if period not in ("day", "month", "year"):
+        period = "day"
+    f = _hist_filters()
+    rows = get_history_summary(uid, period, f["mode"], f["symbol"], f["date_from"], f["date_to"])
+    return jsonify({"period": period, "rows": rows,
+                    "pnl": round(sum(r["pnl"] for r in rows), 2),
+                    "trades": sum(r["trades"] for r in rows)})
+
+
+@app.route("/api/activity")
+@login_required
+def api_activity():
+    uid = session["user_id"]
+    page = max(1, request.args.get("page", 1, type=int))
+    per = min(200, max(1, request.args.get("per", 50, type=int)))
+    rows, total = get_activity(uid, per, (page - 1) * per)
+    return jsonify({"activity": rows, "total": total, "page": page, "per": per,
+                    "pages": max(1, math.ceil(total / float(per)))})
+
+
+@app.route("/history.csv")
+@login_required
+def history_csv():
+    """The user's complete (filtered) trade history as a spreadsheet file."""
+    uid = session["user_id"]
+    rows, _, _ = get_history(uid, limit=10 ** 9, offset=0, **_hist_filters())
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["id", "opened_at_utc", "closed_at_utc", "mode", "symbol", "direction", "strategy",
+                "stake", "entry_price", "exit_price", "pnl", "status", "exit_reason", "contract_id"])
+    for t in rows:
+        w.writerow([t["id"], t.get("opened_at") or "", t.get("closed_at") or "", t.get("mode"),
+                    t.get("symbol"), t.get("direction"), t.get("strategy") or "", t.get("stake"),
+                    t.get("entry_price"), t.get("exit_price"), t.get("pnl"), t.get("status"),
+                    t.get("exit_reason") or "", t.get("contract_id") or ""])
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=trade-history.csv"})
+
+
+@app.route("/api/cloud")
+@login_required
+def api_cloud():
+    """Is the permanent (Firebase) copy switched on and up to date?"""
+    return jsonify(cloud.status())
 
 
 # ── SocketIO ─────────────────────────────────────────────────

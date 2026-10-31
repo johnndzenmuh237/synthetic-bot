@@ -37,10 +37,15 @@ SYMBOLS = {
     "R_75":    "Volatility 75 Index",
     "R_100":   "Volatility 100 Index",
     "1HZ10V":  "Volatility 10 (1s) Index",
+    "1HZ15V":  "Volatility 15 (1s) Index",
     "1HZ25V":  "Volatility 25 (1s) Index",
+    "1HZ30V":  "Volatility 30 (1s) Index",
     "1HZ50V":  "Volatility 50 (1s) Index",
     "1HZ75V":  "Volatility 75 (1s) Index",
+    "1HZ90V":  "Volatility 90 (1s) Index",
     "1HZ100V": "Volatility 100 (1s) Index",
+    "1HZ150V": "Volatility 150 (1s) Index",
+    "1HZ250V": "Volatility 250 (1s) Index",
     "BOOM500":  "Boom 500 Index",
     "CRASH500": "Crash 500 Index",
 }
@@ -191,6 +196,19 @@ DURATION_UNIT = os.getenv("CONTRACT_DURATION_UNIT", "m")
 # ── Web ──────────────────────────────────────────────────────
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
 SECRET_KEY_IS_DEFAULT = SECRET_KEY == "dev-secret"
+# A login stays valid for this many days (the cookie is permanent, not "until the browser closes").
+SESSION_DAYS = int(os.getenv("SESSION_DAYS", 3650))
+
+# ── Firebase Realtime Database (permanent storage for accounts + history) ──
+# These two are public project identifiers (safe to keep in code). The SECRET part is
+# FIREBASE_SERVICE_ACCOUNT (or FIREBASE_DB_SECRET) and must only live in Render's
+# Environment tab. With no credential set, the bot works exactly as before (local database only).
+FIREBASE_DATABASE_URL = _env("FIREBASE_DATABASE_URL", "https://swiftchain-827f2-default-rtdb.firebaseio.com")
+# All of the bot's data lives under this one node, so it can share a Firebase project with other apps
+# (their `users`, `settings`... nodes are never read or written by the bot).
+FIREBASE_ROOT = _env("FIREBASE_ROOT", "synthbot").strip("/")
+FIREBASE_SERVICE_ACCOUNT = (os.getenv("FIREBASE_SERVICE_ACCOUNT", "") or "").strip()
+FIREBASE_DB_SECRET = _env("FIREBASE_DB_SECRET")
 # Render (and most PaaS hosts) inject PORT automatically — fall back to
 # FLASK_PORT/5000 for local development where PORT isn't set.
 FLASK_PORT = int(os.getenv("PORT", os.getenv("FLASK_PORT", 5000)))

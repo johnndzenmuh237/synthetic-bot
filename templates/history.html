@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}History — SyntheticBot Pro{% endblock %}
+{% macro ico(name, cls='') %}<svg class="icon {{ cls }}" aria-hidden="true"><use href="#i-{{ name }}"/></svg>{% endmacro %}
+{% block body %}
+<div class="hist-page">
+  <header class="hist-head">
+    <div class="hist-title">{{ ico('list') }} <span>History</span>
+      <span class="hist-user">{{ username }}</span></div>
+    <div class="hist-head-actions">
+      <a class="hist-btn" href="/dashboard">{{ ico('chart') }} Dashboard</a>
+      <a class="hist-btn" id="csv-link" href="/history.csv">{{ ico('save') }} Download CSV</a>
+      <a class="hist-btn" href="/logout">{{ ico('logout') }} Logout</a>
+    </div>
+  </header>
+
+  <section class="hist-filters">
+    <label>Account
+      <select id="f-mode">
+        <option value="">Demo + Live</option>
+        <option value="demo">Demo</option>
+        <option value="live">Live</option>
+      </select></label>
+    <label>Symbol
+      <select id="f-symbol">
+        <option value="">All</option>
+        {% for s in used_symbols %}<option value="{{ s }}">{{ symbols.get(s, s) }}</option>{% endfor %}
+      </select></label>
+    <label>Result
+      <select id="f-status">
+        <option value="">Everything</option>
+        <option value="CLOSED">Closed trades</option>
+        <option value="WIN">Wins</option>
+        <option value="LOSS">Losses</option>
+        <option value="OPEN">Open</option>
+        <option value="REJECTED">Rejected</option>
+      </select></label>
+    <label>From <input type="date" id="f-from"></label>
+    <label>To <input type="date" id="f-to"></label>
+    <button class="hist-btn hist-apply" id="f-apply" type="button">Apply</button>
+    <button class="hist-btn" id="f-clear" type="button">Clear</button>
+  </section>
+
+  <section class="hist-totals" id="hist-totals"></section>
+
+  <nav class="hist-tabs" id="hist-tabs">
+    <button data-tab="trades" class="active" type="button">All trades</button>
+    <button data-tab="day" type="button">By day</button>
+    <button data-tab="month" type="button">By month</button>
+    <button data-tab="year" type="button">By year</button>
+    <button data-tab="activity" type="button">Account activity</button>
+  </nav>
+
+  <section class="hist-body">
+    <div class="hist-msg" id="hist-msg"></div>
+    <div class="hist-scroll"><table class="hist-table" id="hist-table"></table></div>
+    <div class="hist-pager" id="hist-pager"></div>
+  </section>
+  <p class="hist-note">Times are shown in your local time. Nothing here is ever deleted.</p>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/history.js') }}"></script>{% endblock %}

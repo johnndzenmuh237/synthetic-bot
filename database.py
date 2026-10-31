@@ -3,6 +3,8 @@ import sqlite3, os
 from typing import List, Dict
 from config import DB_PATH, DEFAULT_STRATEGY, DEFAULT_TIMEFRAME
 from logger import log
+import functools, json, threading, time
+from cloud_store import store as cloud
 
 _db_dir = os.path.dirname(DB_PATH)
 if _db_dir:
@@ -80,6 +82,15 @@ def init_db():
             opened_at    TEXT DEFAULT (datetime('now')),
             closed_at    TEXT
         );
+        CREATE TABLE IF NOT EXISTS activity (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER,
+            kind       TEXT,
+            detail     TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS ix_activity_user ON activity(user_id, id);
+        CREATE INDEX IF NOT EXISTS ix_trades_user_closed ON trades(user_id, closed_at);
     """)
     con.commit()
 
@@ -130,6 +141,7 @@ def init_db():
     con.commit()
     con.close()
     log.info("Database ready → %s", DB_PATH)
+    _cloud_boot()
 
 
 # ── Users ────────────────────────────────────────────────────
@@ -561,3 +573,257 @@ def get_consecutive_losses(user_id, mode=None):
         else:
             break
     return count
+
+
+# ═════════════════════════════════════════════════════════════
+#  Permanent history: activity log, full-history queries
+#  (Nothing in this file ever deletes a trade or an activity row.)
+# ═════════════════════════════════════════════════════════════
+def log_activity(user_id, kind, detail=""):
+    """Append one line to the user's permanent activity log. Never raises."""
+    try:
+        con = _conn()
+        cur = con.execute("INSERT INTO activity (user_id, kind, detail) VALUES (?,?,?)",
+                          (user_id, kind, str(detail)[:500]))
+        con.commit()
+        aid = cur.lastrowid
+        con.close()
+        return aid
+    except Exception as e:           # logging an activity must never break a request
+        log.warning("activity log failed: %s", e)
+        return None
+
+
+def get_activity(user_id, limit=100, offset=0):
+    con = _conn()
+    rows = con.execute("SELECT * FROM activity WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                       (user_id, int(limit), int(offset))).fetchall()
+    total = con.execute("SELECT COUNT(*) n FROM activity WHERE user_id=?", (user_id,)).fetchone()["n"]
+    con.close()
+    return [dict(r) for r in rows], int(total)
+
+
+_HIST_STATUSES = ("WIN", "LOSS", "EVEN", "OPEN", "PENDING", "UNCONFIRMED", "REJECTED", "UNRECONCILED", "VOID")
+
+
+def _history_where(user_id, mode=None, status=None, symbol=None, date_from=None, date_to=None):
+    """WHERE clause for the history views. Dates are YYYY-MM-DD (UTC), inclusive; a trade
+    is dated by when it closed, or when it opened if it has not closed yet."""
+    w, p = ["user_id=?"], [user_id]
+    if mode in ("demo", "live"):
+        w.append("mode=?"); p.append(mode)
+    if status == "CLOSED":
+        w.append("status IN ('WIN','LOSS','EVEN')")
+    elif status in _HIST_STATUSES:
+        w.append("status=?"); p.append(status)
+    if symbol:
+        w.append("symbol=?"); p.append(symbol)
+    if date_from:
+        w.append("date(COALESCE(closed_at, opened_at)) >= date(?)"); p.append(date_from)
+    if date_to:
+        w.append("date(COALESCE(closed_at, opened_at)) <= date(?)"); p.append(date_to)
+    return " AND ".join(w), p
+
+
+def get_history(user_id, mode=None, status=None, symbol=None, date_from=None, date_to=None,
+                limit=50, offset=0):
+    """(rows, total_count, totals) for the full history, newest first."""
+    where, p = _history_where(user_id, mode, status, symbol, date_from, date_to)
+    con = _conn()
+    rows = con.execute("SELECT * FROM trades WHERE " + where +
+                       " ORDER BY COALESCE(closed_at, opened_at) DESC, id DESC LIMIT ? OFFSET ?",
+                       p + [int(limit), int(offset)]).fetchall()
+    t = con.execute(
+        "SELECT COUNT(*) n, "
+        "COALESCE(SUM(CASE WHEN status IN ('WIN','LOSS','EVEN') THEN pnl END),0) pnl, "
+        "COALESCE(SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END),0) wins, "
+        "COALESCE(SUM(CASE WHEN status='LOSS' THEN 1 ELSE 0 END),0) losses, "
+        "COALESCE(SUM(CASE WHEN status IN ('WIN','LOSS','EVEN') THEN 1 ELSE 0 END),0) closed "
+        "FROM trades WHERE " + where, p).fetchone()
+    con.close()
+    totals = {"count": int(t["n"]), "pnl": round(float(t["pnl"]), 2), "wins": int(t["wins"]),
+              "losses": int(t["losses"]), "closed": int(t["closed"])}
+    return [dict(r) for r in rows], totals["count"], totals
+
+
+def get_history_summary(user_id, period="day", mode=None, symbol=None, date_from=None, date_to=None):
+    """Profit/loss per day, month or year over the whole history (closed trades only)."""
+    fmt = {"day": "%Y-%m-%d", "month": "%Y-%m", "year": "%Y"}.get(period, "%Y-%m-%d")
+    where, p = _history_where(user_id, mode, "CLOSED", symbol, date_from, date_to)
+    con = _conn()
+    rows = con.execute(
+        "SELECT strftime('{f}', closed_at) period, COUNT(*) trades, "
+        "SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END) wins, "
+        "SUM(CASE WHEN status='LOSS' THEN 1 ELSE 0 END) losses, "
+        "COALESCE(SUM(pnl),0) pnl, COALESCE(SUM(stake),0) staked "
+        "FROM trades WHERE {w} AND closed_at IS NOT NULL GROUP BY period ORDER BY period DESC".format(f=fmt, w=where),
+        p).fetchall()
+    con.close()
+    return [{"period": r["period"], "trades": int(r["trades"]), "wins": int(r["wins"]),
+             "losses": int(r["losses"]), "pnl": round(float(r["pnl"]), 2),
+             "staked": round(float(r["staked"]), 2)} for r in rows]
+
+
+def get_history_symbols(user_id):
+    con = _conn()
+    rows = con.execute("SELECT DISTINCT symbol FROM trades WHERE user_id=? ORDER BY symbol", (user_id,)).fetchall()
+    con.close()
+    return [r["symbol"] for r in rows if r["symbol"]]
+
+
+# ═════════════════════════════════════════════════════════════
+#  Firebase mirror (see cloud_store.py). Local SQLite stays the working database;
+#  every change below is copied to Firebase, and a wiped local file is rebuilt from it.
+# ═════════════════════════════════════════════════════════════
+_TABLE_OF = {"user": "users", "settings": "user_settings", "bot_state": "bot_state",
+             "trade": "trades", "activity": "activity"}
+_PK_OF = {"users": "id", "user_settings": "user_id", "bot_state": "user_id", "trades": "id", "activity": "id"}
+
+
+def _clean(d):
+    return {k: v for k, v in dict(d).items() if v is not None}
+
+
+def _cloud_path(kind, row):
+    if kind == "user":
+        return "users/u{}".format(row["id"])
+    if kind == "settings":
+        return "settings/u{}".format(row["user_id"])
+    if kind == "bot_state":
+        return "bot_state/u{}".format(row["user_id"])
+    if kind == "trade":
+        return "trades/u{}/t{}".format(row["user_id"], row["id"])
+    return "activity/u{}/a{}".format(row["user_id"], row["id"])
+
+
+def _cloud_read(kind, key):
+    """Current local copy of one row -> (firebase path, value). value None = delete it there."""
+    table = _TABLE_OF[kind]
+    con = _conn()
+    row = con.execute("SELECT * FROM {} WHERE {}=?".format(table, _PK_OF[table]), (key,)).fetchone()
+    con.close()
+    if row is None:
+        if kind == "bot_state":                       # a stopped bot: remove its record
+            return "bot_state/u{}".format(key), None
+        return None, None
+    d = dict(row)
+    return _cloud_path(kind, d), _clean(d)
+
+
+cloud.set_reader(_cloud_read)
+
+
+def cloud_ready():
+    """False only while Firebase is configured but the account restore has not finished."""
+    return cloud.ready()
+
+
+def _cloud_snapshot():
+    """Everything in Firebase as {kind: {key: row}} (keys are the local primary keys)."""
+    snap = {"user": {}, "settings": {}, "bot_state": {}, "trade": {}, "activity": {}}
+    for kind, node in (("user", "users"), ("settings", "settings"), ("bot_state", "bot_state")):
+        for _, row in (cloud.get(node) or {}).items():
+            if isinstance(row, dict):
+                key = row.get("id") if kind == "user" else row.get("user_id")
+                if key is not None:
+                    snap[kind][int(key)] = row
+    for kind, node in (("trade", "trades"), ("activity", "activity")):
+        for uk in (cloud.get(node, "shallow=true") or {}):
+            for _, row in (cloud.get("{}/{}".format(node, uk)) or {}).items():
+                if isinstance(row, dict) and row.get("id") is not None:
+                    snap[kind][int(row["id"])] = row
+    return snap
+
+
+def _cloud_restore_once():
+    """Rebuild missing local rows from Firebase, then push any local row Firebase lacks or has stale."""
+    snap = _cloud_snapshot()
+    con = _conn()
+    restored = 0
+    for kind in ("user", "settings", "bot_state", "trade", "activity"):
+        table = _TABLE_OF[kind]
+        cols = {r[1] for r in con.execute("PRAGMA table_info({})".format(table)).fetchall()}
+        for key, row in snap[kind].items():
+            keys = [k for k in row if k in cols]
+            cur = con.execute("INSERT OR IGNORE INTO {} ({}) VALUES ({})".format(
+                table, ",".join(keys), ",".join("?" * len(keys))), [row[k] for k in keys])
+            restored += max(cur.rowcount, 0)
+    con.commit()
+    # Local rows the cloud does not have (or has an older version of) go up now.
+    queued = 0
+    for kind in ("user", "settings", "bot_state", "trade", "activity"):
+        table = _TABLE_OF[kind]
+        for r in con.execute("SELECT * FROM {}".format(table)).fetchall():
+            d = dict(r)
+            key = d[_PK_OF[table]]
+            if _clean(d) != _clean(snap[kind].get(key, {})):
+                cloud.push(kind, key)
+                queued += 1
+    con.close()
+    cloud.restored = True
+    log.info("Firebase restore done: %d rows restored from the cloud, %d local rows queued to upload.",
+             restored, queued)
+
+
+def _cloud_boot():
+    if not cloud.enabled:
+        if cloud.error:
+            log.warning("Cloud sync OFF: %s", cloud.error)
+        else:
+            log.warning("Cloud sync is OFF (no FIREBASE_SERVICE_ACCOUNT set): accounts and history "
+                        "live only in the local database file.")
+        return
+    for attempt in range(3):
+        try:
+            _cloud_restore_once()
+            return
+        except Exception as e:
+            cloud.error = str(e)
+            log.warning("Firebase restore attempt %d failed: %s", attempt + 1, e)
+            time.sleep(2)
+
+    def retry():
+        while not cloud.restored:
+            time.sleep(15)
+            try:
+                _cloud_restore_once()
+                cloud.error = ""
+            except Exception as e:
+                cloud.error = str(e)
+                log.warning("Firebase restore still failing: %s", e)
+    log.error("Firebase is unreachable — starting with the local database; new sign-ups are paused "
+              "until the cloud copy has been restored (retrying every 15 s).")
+    threading.Thread(target=retry, name="cloud-restore", daemon=True).start()
+
+
+def _mirror(fn, items):
+    """Wrap a write function so each call also queues the touched rows for Firebase."""
+    @functools.wraps(fn)
+    def wrapper(*a, **k):
+        result = fn(*a, **k)
+        try:
+            for item in items(a, k, result):
+                if item and item[1] is not None:
+                    cloud.push(*item)
+        except Exception as e:
+            log.warning("cloud queue failed: %s", e)
+        return result
+    return wrapper
+
+
+def _first(a, k, name):
+    return a[0] if a else k.get(name)
+
+
+create_user         = _mirror(create_user, lambda a, k, r: [("user", (get_user(_first(a, k, "username")) or {}).get("id"))] if r else [])
+save_settings       = _mirror(save_settings, lambda a, k, r: [("settings", _first(a, k, "user_id"))])
+set_live_confirmed  = _mirror(set_live_confirmed, lambda a, k, r: [("settings", _first(a, k, "user_id"))])
+save_bot_state      = _mirror(save_bot_state, lambda a, k, r: [("bot_state", _first(a, k, "user_id"))])
+set_entries_hold    = _mirror(set_entries_hold, lambda a, k, r: [("bot_state", _first(a, k, "user_id"))])
+clear_bot_state     = _mirror(clear_bot_state, lambda a, k, r: [("bot_state", _first(a, k, "user_id"))])
+open_trade          = _mirror(open_trade, lambda a, k, r: [("trade", r)])
+update_trade        = _mirror(update_trade, lambda a, k, r: [("trade", _first(a, k, "trade_id"))])
+update_trade_sl     = _mirror(update_trade_sl, lambda a, k, r: [("trade", _first(a, k, "trade_id"))])
+close_trade         = _mirror(close_trade, lambda a, k, r: [("trade", _first(a, k, "trade_id"))])
+mark_trade          = _mirror(mark_trade, lambda a, k, r: [("trade", _first(a, k, "trade_id"))])
+log_activity        = _mirror(log_activity, lambda a, k, r: [("activity", r)])

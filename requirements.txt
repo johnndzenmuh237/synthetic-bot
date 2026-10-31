@@ -10,3 +10,4 @@ flask-sqlalchemy==3.0.5
 werkzeug==2.3.7
 eventlet==0.33.3
 simple-websocket==1.0.0
+cryptography==41.0.7

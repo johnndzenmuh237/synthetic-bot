@@ -160,6 +160,18 @@ CF_BAND_FRAC       = float(os.getenv("CF_BAND_FRAC", 0.10))     # dead-band = th
 CF_PROTECT_PROFIT  = os.getenv("CF_PROTECT_PROFIT", "true").lower() == "true"  # close a trade that was in profit before it turns negative
 CF_ENTRY_RETRY_SEC = float(os.getenv("CF_ENTRY_RETRY_SEC", 15)) # pause after a refused/failed order before trying again
 CF_MAX_TICK_AGE    = float(os.getenv("CF_MAX_TICK_AGE", 10))    # no entries if the last price update is older than this
+# Deriv limits how many `sell` requests may be sent per moment. Sells are sent one after another with
+# this gap, and a "rate limit" answer is retried automatically instead of being reported as a failure.
+# Minimum seconds between requests of the same kind sent to Deriv (every request type is paced in
+# broker.py, and a "rate limit" answer is waited out and retried automatically).
+REQ_GAP_PROPOSAL   = float(os.getenv("REQ_GAP_PROPOSAL", 0.5))
+REQ_GAP_BUY        = float(os.getenv("REQ_GAP_BUY", 0.5))
+REQ_GAP_SELL       = float(os.getenv("REQ_GAP_SELL", 0.6))
+REQ_GAP_CONTRACT   = float(os.getenv("REQ_GAP_CONTRACT", 0.25))   # proposal_open_contract (position pricing)
+REQ_GAP_OTHER      = float(os.getenv("REQ_GAP_OTHER", 0.1))
+RATE_LIMIT_RETRIES = int(os.getenv("RATE_LIMIT_RETRIES", 5))
+SELL_MIN_GAP_SEC   = float(os.getenv("SELL_MIN_GAP_SEC", 0.6))
+SELL_RATE_RETRIES  = int(os.getenv("SELL_RATE_RETRIES", 4))
 POSITION_POLL_SEC  = float(os.getenv("POSITION_POLL_SEC", 3))   # how often open positions are re-priced
 TIMEFRAME_CHOICES  = {"M1": "1 minute", "M5": "5 minutes"}
 DEFAULT_TIMEFRAME  = "M1"

@@ -12,8 +12,25 @@ from config import (
     DERIV_REST_BASE, DERIV_OTP_TTL_SEC,
     DERIV_DEMO_TOKEN, DERIV_LIVE_TOKEN,
     CANDLE_COUNT, DURATION, DURATION_UNIT, TIMEFRAMES,
+    REQ_GAP_PROPOSAL, REQ_GAP_BUY, REQ_GAP_SELL, REQ_GAP_CONTRACT, REQ_GAP_OTHER, RATE_LIMIT_RETRIES,
 )
 from logger import log
+
+
+class DerivError(Exception):
+    """An error answer from Deriv. str() is just the message (as before); .code is Deriv's error code."""
+    def __init__(self, message, code=""):
+        super().__init__(message)
+        self.code = code or ""
+
+
+def is_rate_limit(exc):
+    return getattr(exc, "code", "") == "RateLimit" or "rate limit" in str(exc).lower()
+
+
+# request kind -> minimum seconds between two requests of that kind
+_GAPS = {"proposal": REQ_GAP_PROPOSAL, "buy": REQ_GAP_BUY, "sell": REQ_GAP_SELL,
+         "proposal_open_contract": REQ_GAP_CONTRACT}
 
 
 class OrderStatusUnknown(Exception):
@@ -68,6 +85,7 @@ class DerivBroker:
         self.connected   = False
         self._req_id     = 0
         self._pending: Dict[int, asyncio.Future] = {}
+        self._next_slot: Dict[str, float] = {}   # request kind -> earliest next send time
         self._on_candle  = None
         self._subscriptions = set()   # {(symbol, tf_key), ...} — resubscribed after a reconnect
         self._reconnecting  = False
@@ -79,7 +97,40 @@ class DerivBroker:
         self._req_id += 1
         return self._req_id
 
+    async def _pace(self, kind):
+        """Reserve the next free send slot for this kind of request (never blocks other kinds
+        or the receiving side; it only spaces out our own sends)."""
+        loop = asyncio.get_event_loop()
+        gap = _GAPS.get(kind, REQ_GAP_OTHER)
+        now = loop.time()
+        start = max(now, self._next_slot.get(kind, 0.0))
+        self._next_slot[kind] = start + gap
+        if start > now:
+            await asyncio.sleep(start - now)
+
     async def _send(self, payload, timeout=30.0):
+        """Send one request, spaced out per request type. If Deriv answers 'rate limit', wait and
+        send it again (Deriv refused it explicitly, so nothing was executed) instead of failing."""
+        kind = next((k for k in ("proposal_open_contract", "proposal", "buy", "sell") if k in payload), "other")
+        attempt = 0
+        while True:
+            await self._pace(kind)
+            try:
+                return await self._send_raw(dict(payload), timeout)
+            except (ConnectionError, asyncio.TimeoutError):
+                raise
+            except Exception as e:
+                if not is_rate_limit(e) or attempt >= RATE_LIMIT_RETRIES:
+                    raise
+                attempt += 1
+                delay = min(1.0 * attempt, 5.0)
+                # back every request of this kind off, not just this one
+                loop = asyncio.get_event_loop()
+                self._next_slot[kind] = max(self._next_slot.get(kind, 0.0), loop.time() + delay)
+                log.warning("Deriv rate limit on '%s' - waiting %.1fs then retrying (%d/%d)",
+                            kind, delay, attempt, RATE_LIMIT_RETRIES)
+
+    async def _send_raw(self, payload, timeout=30.0):
         if not self.connected or self.ws is None:
             raise ConnectionError("Not connected to Deriv (reconnecting...)")
         rid = self._next_id()
@@ -109,8 +160,9 @@ class DerivBroker:
                         fut = self._pending.pop(rid)
                         if not fut.done():
                             if "error" in msg:
-                                fut.set_exception(
-                                    Exception(msg["error"].get("message", "Unknown error")))
+                                fut.set_exception(DerivError(
+                                    msg["error"].get("message", "Unknown error"),
+                                    msg["error"].get("code", "")))
                             else:
                                 fut.set_result(msg)
                     elif msg.get("msg_type") == "ohlc":
@@ -342,6 +394,132 @@ class DerivBroker:
             self._subscriptions.add((symbol, tf_key))
         except Exception as e:
             log.error("subscribe_candles error [%s %s]: %s", symbol, tf_key, e)
+
+    async def get_balance(self):
+        """Authoritative balance from Deriv. On failure the last known value is kept
+        and `balance_ok` is False so the UI can show 'refresh pending' instead of a
+        made-up number."""
+        try:
+            resp = await self._send({"balance": 1}, timeout=10)
+            self.balance = float(resp["balance"]["balance"])
+            self.balance_ok = True
+        except Exception as e:
+            self.balance_ok = False
+            log.error("get_balance error: %s", e)
+        return self.balance
+
+    async def _proposal(self, symbol, ctype, stake):
+        """Deriv's NEW API calls the instrument field `underlying_symbol`; the old
+        one called it `symbol`. Try the new name first, fall back to the old one
+        if Deriv rejects it, and remember whichever works."""
+        last_exc = None
+        for key in (self._sym_key, "symbol" if self._sym_key != "symbol" else "underlying_symbol"):
+            payload = {
+                "proposal":      1,
+                "amount":        stake,
+                "basis":         "stake",
+                "contract_type": ctype,
+                "currency":      self.currency,
+                key:             symbol,
+                "duration":      DURATION,
+                "duration_unit": DURATION_UNIT,
+            }
+            try:
+                prop = await self._send(payload, timeout=15)
+                self._sym_key = key
+                return prop
+            except ConnectionError:
+                raise
+            except Exception as e:
+                last_exc = e
+                msg = str(e).lower()
+                # only retry with the other field name when the complaint is about the field itself
+                if not any(w in msg for w in ("symbol", "underlying", "unrecognised", "unrecognized",
+                                              "additional", "properties", "schema", "required")):
+                    raise
+                log.warning("Proposal with '%s' rejected (%s) — trying the other field name", key, e)
+        raise last_exc
+
+    async def place_trade(self, symbol, direction, stake):
+        """Returns the contract dict on success, {} when Deriv REJECTED the order
+        (reason in self.last_error), and raises OrderStatusUnknown when the buy was
+        sent but its outcome is unknown."""
+        self.last_error = ""
+        ctype = "CALL" if direction == "BUY" else "PUT"
+
+        try:
+            prop = await self._proposal(symbol, ctype, stake)
+        except Exception as e:
+            self.last_error = "Proposal rejected: {}".format(e)
+            log.error("Proposal rejected [%s %s $%.2f]: %s", direction, symbol, stake, e)
+            return {}
+
+        pid = (prop.get("proposal") or {}).get("id")
+        if not pid:
+            self.last_error = "Proposal returned no id: {}".format(str(prop)[:200])
+            log.error(self.last_error)
+            return {}
+        ask = (prop.get("proposal") or {}).get("ask_price", stake)
+
+        try:
+            buy = await self._send({"buy": pid, "price": max(float(ask or stake), float(stake))},
+                                   timeout=15)
+        except asyncio.TimeoutError:
+            self.last_error = "No answer from Deriv to the buy request"
+            raise OrderStatusUnknown(self.last_error)
+        except ConnectionError as e:
+            if "send failed" in str(e).lower() or "not connected" in str(e).lower():
+                self.last_error = "Buy not sent: {}".format(e)     # never left this machine
+                log.error(self.last_error)
+                return {}
+            self.last_error = "Connection lost while buying: {}".format(e)
+            raise OrderStatusUnknown(self.last_error)
+        except Exception as e:
+            self.last_error = "Buy rejected: {}".format(e)
+            log.error("Buy rejected: %s", e)
+            return {}
+
+        contract = buy.get("buy") or {}
+        if not contract.get("contract_id"):
+            self.last_error = "Buy returned no contract: {}".format(str(buy)[:200])
+            log.error(self.last_error)
+            raise OrderStatusUnknown(self.last_error)
+        log.info("TRADE OPENED | %s %s | Contract=%s | Stake=$%.2f",
+                 direction, symbol, contract["contract_id"], stake)
+        return contract
+
+    async def get_contract(self, contract_id):
+        """Status of a contract: is_sold, profit, status ('won'/'lost'/'open')..."""
+        try:
+            resp = await self._send({
+                "proposal_open_contract": 1,
+                "contract_id": int(contract_id),
+            }, timeout=15)
+        except Exception as e:
+            log.error("get_contract error [%s]: %s", contract_id, e)
+            return {}
+        return resp.get("proposal_open_contract", {}) or {}
+
+    async def close_trade(self, contract_id):
+        """Sell an open contract at market. Returns Deriv's `sell` dict, {} on refusal."""
+        try:
+            resp = await self._send({"sell": int(contract_id), "price": 0}, timeout=15)
+        except Exception as e:
+            self.last_error = "Sell failed: {}".format(e)
+            log.error("close_trade error [%s]: %s", contract_id, e)
+            return {}
+        log.info("TRADE SOLD | Contract=%s", contract_id)
+        return resp.get("sell", {}) or {}
+
+    async def get_portfolio(self):
+        """Contracts Deriv currently shows as open for this account, or None if the
+        lookup is not possible (used only to reconcile orders of unknown status)."""
+        try:
+            resp = await self._send({"portfolio": 1}, timeout=15)
+            return (resp.get("portfolio") or {}).get("contracts", []) or []
+        except Exception as e:
+            log.error("get_portfolio error: %s", e)
+            return Nonendles error [%s %s]: %s", symbol, tf_key, e)
 
     async def get_balance(self):
         """Authoritative balance from Deriv. On failure the last known value is kept

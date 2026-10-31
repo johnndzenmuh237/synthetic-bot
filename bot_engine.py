@@ -45,7 +45,7 @@ from config import (
     EXECUTION_TF, ANALYSIS_TF, TIMEFRAMES, DURATION, DURATION_UNIT,
     DEFAULT_STRATEGY, DEFAULT_LOSS_POLICY, ALLOW_HEDGE, MAX_OPEN_TRADES,
     CF_CONFIRM_SEC, CF_BAND_FRAC, CF_PROTECT_PROFIT, CF_ENTRY_RETRY_SEC, CF_MAX_TICK_AGE,
-    POSITION_POLL_SEC, DEFAULT_TIMEFRAME,
+    POSITION_POLL_SEC, DEFAULT_TIMEFRAME, SELL_MIN_GAP_SEC, SELL_RATE_RETRIES,
 )
 from logger import log
 
@@ -101,6 +101,8 @@ class BotSession:
         self.pnl_peak      = {}      # trade id -> best profit seen while open
         self._selling      = set()   # trade ids with a sell in flight (no double sells)
         self._sell_block   = {}      # trade id -> (retry_at, failures)
+        self._sell_gate    = None    # created lazily inside the bot's event loop (paces sell requests)
+        self._last_sell    = 0.0
         self._entry_block_until = 0.0
         self._follow_busy  = False
         self._follow_dirty = False
@@ -625,6 +627,29 @@ class BotSession:
                 log.info("Reversal signal while trade #%s is losing (%.2f): holding to expiry (policy: hold)",
                          t["id"], profit)
 
+    async def _sell_paced(self, cid):
+        """Send a sell to Deriv without tripping its rate limit: sells go out one at a time with a
+        small gap (7 positions reversing together used to fire 7 sells at once), and a
+        'rate limit' answer is retried after a short pause instead of being treated as a failure."""
+        if self._sell_gate is None:
+            self._sell_gate = asyncio.Lock()
+        sold = {}
+        for attempt in range(max(1, SELL_RATE_RETRIES)):
+            async with self._sell_gate:
+                wait = min(SELL_MIN_GAP_SEC, self._last_sell + SELL_MIN_GAP_SEC - time.time())
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                self.broker.last_error = ""
+                sold = await self.broker.close_trade(cid)
+                self._last_sell = time.time()
+            if sold:
+                return sold
+            if "rate limit" not in (self.broker.last_error or "").lower():
+                return sold                      # a real refusal: report it, don't hammer Deriv
+            log.info("Deriv sell rate limit hit for contract %s — retrying shortly (%d)", cid, attempt + 1)
+            await asyncio.sleep(1.5 * (attempt + 1))
+        return sold
+
     async def _sell_position(self, t, reason, fast=False):
         """Sell at market, then record ONLY Deriv's confirmed result.
         fast=True skips the pre-check so a reversal exit is sent without delay."""
@@ -634,7 +659,7 @@ class BotSession:
             if info and "is_valid_to_sell" in info and not info.get("is_valid_to_sell"):
                 log.info("Trade #%s cannot be sold early — it will run to expiry", t["id"])
                 return False
-        sold = await self.broker.close_trade(cid)
+        sold = await self._sell_paced(cid)
         if not sold:
             self._emit("trade_error", {"message": "Could not close trade #{}: {}".format(
                 t["id"], self.broker.last_error or "refused by Deriv")})

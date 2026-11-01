@@ -33,7 +33,7 @@ from logger import log
 
 _SCOPES = ("https://www.googleapis.com/auth/firebase.database "
            "https://www.googleapis.com/auth/userinfo.email")
-TIMEOUT = 20
+TIMEOUT = 10
 
 
 class CloudError(Exception):

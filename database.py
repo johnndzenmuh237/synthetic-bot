@@ -773,14 +773,14 @@ def _cloud_boot():
             log.warning("Cloud sync is OFF (no FIREBASE_SERVICE_ACCOUNT set): accounts and history "
                         "live only in the local database file.")
         return
-    for attempt in range(3):
-        try:
-            _cloud_restore_once()
-            return
-        except Exception as e:
-            cloud.error = str(e)
-            log.warning("Firebase restore attempt %d failed: %s", attempt + 1, e)
-            time.sleep(2)
+    # One quick attempt while starting; if it fails the server still starts at once (Render must see
+    # the web port open quickly) and the restore keeps retrying in the background.
+    try:
+        _cloud_restore_once()
+        return
+    except Exception as e:
+        cloud.error = str(e)
+        log.warning("Firebase restore attempt failed: %s", e)
 
     def retry():
         while not cloud.restored:

@@ -38,6 +38,15 @@
       .catch(function (e) { if (e.message !== "login") $("hist-msg").textContent = "Could not load: " + e.message; });
   }
 
+  /* Label every cell with its column title so phones can show each row as a card. */
+  function labelCells() {
+    var heads = [].map.call(document.querySelectorAll("#hist-table thead th"), function (h) { return h.textContent; });
+    document.querySelectorAll("#hist-table tbody tr").forEach(function (tr) {
+      [].forEach.call(tr.children, function (td, i) { if (heads[i]) td.setAttribute("data-label", heads[i]); });
+    });
+    window.scrollTo(0, 0);
+  }
+
   function totals(t) {
     var rate = t.closed ? Math.round(100 * t.wins / t.closed) : 0;
     $("hist-totals").innerHTML =
@@ -70,7 +79,7 @@
              '<td class="' + cls(t.pnl) + '">' + money(t.pnl) + "</td><td>" + esc(t.exit_reason || "") + "</td></tr>";
       });
       if (!d.trades.length) h += '<tr><td colspan="9" class="empty">No trades match these filters yet.</td></tr>';
-      $("hist-table").innerHTML = h + "</tbody>";
+      $("hist-table").innerHTML = h + "</tbody>"; labelCells();
       pager(d);
     });
   }
@@ -90,7 +99,7 @@
              cls(r.pnl) + '"><b>' + money(r.pnl) + "</b></td></tr>";
       });
       if (!d.rows.length) h += '<tr><td colspan="6" class="empty">No closed trades in this range yet.</td></tr>';
-      $("hist-table").innerHTML = h + "</tbody>";
+      $("hist-table").innerHTML = h + "</tbody>"; labelCells();
       $("hist-pager").innerHTML = "";
     });
   }
@@ -104,7 +113,7 @@
              esc(String(a.kind).replace(/_/g, " ")) + "</span></td><td>" + esc(a.detail) + "</td></tr>";
       });
       if (!d.activity.length) h += '<tr><td colspan="3" class="empty">Nothing recorded yet.</td></tr>';
-      $("hist-table").innerHTML = h + "</tbody>";
+      $("hist-table").innerHTML = h + "</tbody>"; labelCells();
       pager(d);
     });
   }

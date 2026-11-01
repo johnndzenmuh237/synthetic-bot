@@ -48,6 +48,7 @@
     <span class="logo-icon">{{ ico('zap') }}</span>
     <span>Synthetic<span class="logo-pro">Bot</span></span>
   </div>
+  <a class="nav-history" href="/history" title="All your trades and activity">{{ ico('list') }} History</a>
   <button class="hamburger" onclick="toggleSidebar()" aria-label="Open menu" title="Menu">{{ ico('menu') }}</button>
 </nav>
 
@@ -88,6 +89,9 @@
     <div class="sidebar-logo">
       <span class="logo-icon">{{ ico('zap') }}</span>
       <span class="logo-text">Synthetic<span class="logo-pro">Bot</span></span>
+    </div>
+    <div class="sidebar-section">
+      <a class="history-btn" href="/history">{{ ico('list') }} <span>Trade History</span> <small>all trades, profit &amp; activity</small></a>
     </div>
 
     <!-- Account -->
@@ -274,6 +278,7 @@
         <span class="status-text" id="status-text">Stopped</span>
       </div>
       <div class="topbar-right">
+        <a class="topbar-history" href="/history" title="All your trades and activity">{{ ico('list') }} History</a>
         <div class="running-info" id="running-info">
           <span class="ri-badge" id="ri-lot">Stake: 1.00</span>
           <span class="ri-badge" id="ri-pos">Max: 1</span>
@@ -370,7 +375,7 @@
       </div>
 
       <div class="feed-panel">
-        <div class="panel-title">{{ ico('list') }} Trade History</div>
+        <div class="panel-title has-more">{{ ico('list') }} Recent Trades <a class="panel-more" href="/history">View full history &rarr;</a></div>
         <div class="trade-list" id="trade-list">
           <div class="empty-feed">Loading trades...</div>
         </div>

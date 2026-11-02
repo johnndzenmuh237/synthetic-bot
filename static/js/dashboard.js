@@ -30,10 +30,13 @@ var SYMBOL_NAMES = {
   "R_10":"Volatility 10 Index","R_25":"Volatility 25 Index",
   "R_50":"Volatility 50 Index","R_75":"Volatility 75 Index",
   "R_100":"Volatility 100 Index",
-  "1HZ10V":"Volatility 10 (1s) Index","1HZ25V":"Volatility 25 (1s) Index",
+  "1HZ10V":"Volatility 10 (1s) Index","1HZ15V":"Volatility 15 (1s) Index",
+  "1HZ25V":"Volatility 25 (1s) Index","1HZ30V":"Volatility 30 (1s) Index",
   "1HZ50V":"Volatility 50 (1s) Index","1HZ75V":"Volatility 75 (1s) Index",
-  "1HZ100V":"Volatility 100 (1s) Index",
-  "BOOM500":"Boom 500 Index","CRASH500":"Crash 500 Index"
+  "1HZ90V":"Volatility 90 (1s) Index","1HZ100V":"Volatility 100 (1s) Index",
+  "1HZ150V":"Volatility 150 (1s) Index","1HZ250V":"Volatility 250 (1s) Index",
+  "BOOM500":"Boom 500 Index","CRASH500":"Crash 500 Index",
+  "frxXAUUSD":"Gold / US Dollar (XAUUSD)"
 };
 var STRATEGY_NAMES = {};
 var LOSS_NAMES = {};

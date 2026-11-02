@@ -48,6 +48,9 @@ SYMBOLS = {
     "1HZ250V": "Volatility 250 (1s) Index",
     "BOOM500":  "Boom 500 Index",
     "CRASH500": "Crash 500 Index",
+    # Gold (Deriv symbol frxXAUUSD). A real market: it is closed on weekends / the daily break, and Deriv
+    # then refuses orders ("Market is closed"); the bot just waits and tries again, it does not crash.
+    "frxXAUUSD": "Gold / US Dollar (XAUUSD)",
 }
 
 # ── Timeframes ───────────────────────────────────────────────

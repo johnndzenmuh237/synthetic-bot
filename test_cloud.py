@@ -334,6 +334,16 @@ class T44_Symbols(unittest.TestCase):
         for s in want:
             self.assertIn(s, config.SYMBOLS)
         self.assertIn("BOOM500", config.SYMBOLS)              # earlier symbols untouched
+    def test_gold_xauusd_selectable_and_tradable(self):
+        import app
+        self.assertIn("frxXAUUSD", config.SYMBOLS)
+        c = app.app.test_client()
+        c.post("/register", data={"username": "gold_user", "password": "password123", "confirm_password": "password123"})
+        c.post("/login", data={"username": "gold_user", "password": "password123"})
+        r = c.post("/api/settings", json={"symbol": "frxXAUUSD"}).get_json()
+        self.assertTrue(r["ok"]); self.assertEqual(r["saved"]["symbol"], "frxXAUUSD")
+        self.assertIn("frxXAUUSD", c.get("/dashboard").data.decode())
+        self.assertIn("frxXAUUSD", open(os.path.join(config.__file__ and os.path.dirname(config.__file__), "static/js/dashboard.js")).read())
     def test_every_symbol_can_be_selected_and_saved(self):
         import app
         c = app.app.test_client()

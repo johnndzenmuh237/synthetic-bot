@@ -10,6 +10,7 @@ every bot that should be running after a crash or server restart.
 """
 import csv
 import io
+import json
 import math
 import threading
 import time
@@ -26,13 +27,18 @@ from database import (init_db, create_user, get_user, get_user_by_id,
                       save_bot_state, get_bot_state, clear_bot_state, get_all_bot_states,
                       set_entries_hold,
                       log_activity, get_activity, get_history, get_history_summary,
-                      get_history_symbols, cloud_ready)
+                      get_history_symbols, cloud_ready, get_user_token_blobs, set_user_token,
+                      set_user_active, touch_login, user_is_active, get_first_user_id, list_users_admin)
+import pwa
+import token_vault
 from cloud_store import store as cloud
 from bot_engine import BotSession
 from broker import fetch_accounts
 from config import (SECRET_KEY, SECRET_KEY_IS_DEFAULT, FLASK_PORT, SYMBOLS, MIN_STAKE, MAX_STAKE,
                     MAX_OPEN_TRADES, ALLOW_REGISTRATION, STRATEGIES, LOSS_POLICIES,
-                    DERIV_DEMO_TOKEN, DERIV_LIVE_TOKEN, TIMEFRAME_CHOICES, SESSION_DAYS)
+                    DERIV_DEMO_TOKEN, DERIV_LIVE_TOKEN, TIMEFRAME_CHOICES, SESSION_DAYS,
+                    ADMIN_USERNAMES, MAX_CONCURRENT_BOTS, ADMIN_PATH, ADMIN_PATH_IS_DEFAULT,
+                    ADMIN_SESSION_HOURS, ADMIN_LOGIN_MAX_FAILS, ADMIN_LOGIN_LOCK_SEC)
 from logger import log
 
 app = Flask(__name__)
@@ -117,8 +123,37 @@ def validate_config(data, base):
     return cfg, ""
 
 
-def _token_for(mode):
-    return DERIV_LIVE_TOKEN if mode == "live" else DERIV_DEMO_TOKEN
+# ── Who is who, and whose Deriv token a bot uses ─────────────
+def is_admin_user(user):
+    """Admins: usernames listed in ADMIN_USERNAMES; if that is empty, the first account ever created."""
+    if not user:
+        return False
+    if ADMIN_USERNAMES:
+        return str(user["username"]).strip().lower() in ADMIN_USERNAMES
+    return user["id"] == get_first_user_id()
+
+
+def _own_token(uid, mode):
+    return token_vault.decrypt(get_user_token_blobs(uid)["live" if mode == "live" else "demo"])
+
+
+def _user_token(uid, mode):
+    """The token a bot for this user must use: their own; only an admin may fall back to the
+    server's DERIV_*_TOKEN. Everyone else without a token gets "" (and cannot trade)."""
+    own = _own_token(uid, mode)
+    if own:
+        return own
+    if is_admin_user(get_user_by_id(uid)):
+        return DERIV_LIVE_TOKEN if mode == "live" else DERIV_DEMO_TOKEN
+    return ""
+
+
+def _token_source(uid, mode):
+    if _own_token(uid, mode):
+        return "own"
+    if is_admin_user(get_user_by_id(uid)) and (DERIV_LIVE_TOKEN if mode == "live" else DERIV_DEMO_TOKEN):
+        return "server"
+    return "none"
 
 
 def _make_session(uid, cfg):
@@ -132,7 +167,7 @@ def _make_session(uid, cfg):
         lot_size=cfg["lot_size"], max_positions=cfg["max_positions"],
         strategy=cfg["strategy"], loss_policy=cfg["loss_policy"],
         close_on_stop=cfg["close_on_stop"], account_id=cfg.get("account_id", ""),
-        timeframe=cfg.get("timeframe", "M1"))
+        timeframe=cfg.get("timeframe", "M1"), token=_user_token(uid, cfg["mode"]))
 
 
 def _start_worker(uid, cfg):
@@ -144,6 +179,9 @@ def _start_worker(uid, cfg):
             if old.alive:
                 return False, "The previous worker is still stopping — try again in a few seconds"
             active_sessions.pop(uid, None)
+        running = sum(1 for u, s in active_sessions.items() if u != uid and s.alive)
+        if running >= MAX_CONCURRENT_BOTS:
+            return False, "The server is at its limit of {} running bots. Please try again later.".format(MAX_CONCURRENT_BOTS)
         sess = _make_session(uid, cfg)
         active_sessions[uid] = sess
         sess.start()
@@ -160,6 +198,12 @@ def _supervise_once():
         with _workers_lock:
             sess = active_sessions.get(uid)
             if sess is not None and (sess.alive or sess._stop_requested):
+                continue
+            if not user_is_active(get_user_by_id(uid)):
+                clear_bot_state(uid)               # deactivated (or deleted) accounts never run
+                continue
+            if not _user_token(uid, state["mode"]):
+                log.warning("Not resuming bot for user=%s: no %s token connected", uid, state["mode"])
                 continue
             cfg = {k: state[k] for k in ("symbol", "mode", "lot_size", "max_positions",
                                          "strategy", "loss_policy", "close_on_stop", "account_id", "timeframe")}
@@ -200,8 +244,13 @@ def login_required(f):
     def decorated(*args, **kwargs):
         uid = session.get("user_id")
         # The cookie can outlive the user (e.g. the database was reset by a redeploy).
-        if not uid or not get_user_by_id(uid):
+        user = get_user_by_id(uid) if uid else None
+        if not user:
             session.clear()
+            return redirect(url_for("login"))
+        if not user_is_active(user):
+            session.clear()
+            flash("This account has been deactivated. Please contact the administrator.", "error")
             return redirect(url_for("login"))
         session.permanent = True        # also upgrades logins made before this update
         return f(*args, **kwargs)
@@ -220,7 +269,11 @@ def login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         user = get_user(username)
+        if user and check_password_hash(user["password_hash"], password) and not user_is_active(user):
+            flash("This account has been deactivated. Please contact the administrator.", "error")
+            return render_template("login.html")
         if user and check_password_hash(user["password_hash"], password):
+            touch_login(user["id"])
             session.permanent = True
             session["user_id"]  = user["id"]
             session["username"] = user["username"]
@@ -234,10 +287,8 @@ def login():
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    # Every account that registers here shares the SAME Deriv token
-    # (set once in the environment, not per-user) — anyone who signs up
-    # can trade on your Deriv account. Set ALLOW_REGISTRATION=false once
-    # you've created your own login to lock the signup page.
+    # Every user connects THEIR OWN Deriv tokens on the dashboard; the server's DERIV_*_TOKEN is only used
+    # for admin accounts. Set ALLOW_REGISTRATION=false to close sign-ups.
     if not ALLOW_REGISTRATION:
         flash("Registration is currently closed.", "error")
         return redirect(url_for("login"))
@@ -350,9 +401,10 @@ def api_start_bot():
     if err:
         return jsonify({"ok": False, "error": err}), 400
 
-    if not _token_for(cfg["mode"]):
-        return jsonify({"ok": False, "error": "No {} API token is configured on the server "
-                        "(set DERIV_{}_TOKEN).".format(cfg["mode"].upper(), "LIVE" if cfg["mode"] == "live" else "DEMO")}), 400
+    if not _user_token(uid, cfg["mode"]):
+        return jsonify({"ok": False, "code": "token_required",
+                        "error": "Connect your {} Deriv API token first (sidebar → Deriv connection).".format(
+                            cfg["mode"].upper())}), 400
 
     if cfg["mode"] == "live":
         if data.get("confirm_live") is True:
@@ -479,9 +531,9 @@ def api_accounts():
     mode = request.args.get("mode", "demo")
     if mode not in ("demo", "live"):
         return jsonify({"ok": False, "error": "Mode must be demo or live"}), 400
-    token = _token_for(mode)
+    token = _user_token(session["user_id"], mode)
     if not token:
-        return jsonify({"ok": False, "error": "No {} API token configured on the server".format(mode.upper())})
+        return jsonify({"ok": False, "error": "No {} API token connected yet".format(mode.upper())})
     import asyncio
     try:
         accounts = asyncio.run(fetch_accounts(token))
@@ -499,6 +551,8 @@ def api_accounts():
 def api_diagnose():
     """Shows what THIS server has configured and what Deriv answers. Tokens are never
     returned - only their length, first/last characters and any suspicious characters."""
+    if not is_admin_user(get_user_by_id(session["user_id"])):
+        return jsonify({"ok": False, "error": "Administrators only"}), 403
     import asyncio
     import aiohttp
     from config import DERIV_APP_ID, DERIV_REST_BASE
@@ -576,6 +630,280 @@ def _cfg_text(cfg):
     return "{} · {} · {} · {} · stake {} · max {} trades".format(
         cfg.get("symbol"), cfg.get("mode"), cfg.get("strategy"), cfg.get("timeframe"),
         cfg.get("lot_size"), cfg.get("max_positions"))
+
+
+# ── Each user's own Deriv tokens ─────────────────────────────
+def _token_status(uid):
+    out = {}
+    for mode in ("demo", "live"):
+        own = _own_token(uid, mode)
+        out[mode] = {"source": _token_source(uid, mode), "hint": token_vault.hint(own) if own else ""}
+        out[mode]["connected"] = out[mode]["source"] != "none"
+    return out
+
+
+@app.route("/api/tokens")
+@login_required
+def api_tokens():
+    """Which tokens are connected (never the tokens themselves)."""
+    return jsonify({"ok": True, "tokens": _token_status(session["user_id"])})
+
+
+def _check_token(token, mode):
+    """Ask Deriv what this token can access. Returns (ok, message, account)."""
+    import asyncio
+    want = "real" if mode == "live" else "demo"
+    try:
+        accounts = asyncio.run(fetch_accounts(token))
+    except ConnectionError as e:
+        msg = str(e)
+        if "invalid or expired" in msg.lower():
+            msg += " Make sure it was created for the same App ID this site uses, and that it is not expired."
+        return False, msg, None
+    except Exception as e:
+        log.error("token check error: %s", e)
+        return False, "Could not reach Deriv to check the token. Try again in a moment.", None
+    match = [a for a in accounts if a.get("account_type") == want]
+    if not match:
+        kinds = sorted({a.get("account_type") or "?" for a in accounts}) or ["none"]
+        return False, ("This token has no {} account (it gives access to: {}). "
+                       "Use a {} token here.".format(mode.upper(), ", ".join(kinds), mode.upper())), None
+    a = match[0]
+    return True, "", {"account_id": a.get("account_id", ""), "balance": a.get("balance"),
+                      "currency": a.get("currency", "")}
+
+
+@app.route("/api/tokens", methods=["POST"])
+@login_required
+def api_save_token():
+    uid = session["user_id"]
+    data = request.get_json(silent=True) or {}
+    mode = data.get("mode")
+    token = str(data.get("token") or "").strip().strip('"\'').strip()
+    if mode not in ("demo", "live"):
+        return jsonify({"ok": False, "error": "Mode must be demo or live"}), 400
+    if not (10 <= len(token) <= 200) or not all(ch.isalnum() or ch in "_-." for ch in token):
+        return jsonify({"ok": False, "error": "That does not look like a Deriv API token. Paste it exactly as Deriv shows it."}), 400
+    sess = active_sessions.get(uid)
+    if sess is not None and sess.alive and sess.mode == mode:
+        return jsonify({"ok": False, "error": "Stop your bot before changing its {} token.".format(mode.upper())}), 409
+    ok, msg, account = _check_token(token, mode)
+    if not ok:
+        return jsonify({"ok": False, "error": msg}), 400
+    set_user_token(uid, mode, token_vault.encrypt(token))
+    log_activity(uid, "token_saved", "{} token connected (account {})".format(mode.upper(), account["account_id"]))
+    return jsonify({"ok": True, "account": account, "tokens": _token_status(uid)})
+
+
+@app.route("/api/tokens/remove", methods=["POST"])
+@login_required
+def api_remove_token():
+    uid = session["user_id"]
+    mode = (request.get_json(silent=True) or {}).get("mode")
+    if mode not in ("demo", "live"):
+        return jsonify({"ok": False, "error": "Mode must be demo or live"}), 400
+    sess = active_sessions.get(uid)
+    if sess is not None and sess.alive and sess.mode == mode:
+        return jsonify({"ok": False, "error": "Stop your bot before removing its {} token.".format(mode.upper())}), 409
+    set_user_token(uid, mode, "")
+    log_activity(uid, "token_removed", "{} token removed".format(mode.upper()))
+    return jsonify({"ok": True, "tokens": _token_status(uid)})
+
+
+# ── Admin console: a separate app at a SECRET path with its own login ──
+# Nothing in the normal app links to it, and every admin URL answers 404 (not "forbidden") to anyone who is not
+# signed in here, so its existence is not revealed. Signing in here does NOT sign you in to the trading app and
+# vice versa: the admin session is its own (short-lived, throttled) session.
+ADMIN_BASE = ADMIN_PATH.rstrip("/")
+_admin_fails = {}          # client address -> (failures, locked_until)
+_DUMMY_HASH = generate_password_hash("not-a-real-password")
+
+
+def _client_ip():
+    fwd = request.headers.get("X-Forwarded-For", "")
+    return (fwd.split(",")[0].strip() or request.remote_addr or "?")
+
+
+def _admin_session_user():
+    """The signed-in admin (dict) or None. Checks age, that the account still exists, is active and is an admin."""
+    uid, at = session.get("admin_uid"), session.get("admin_at")
+    if not uid or not at or time.time() - float(at) > ADMIN_SESSION_HOURS * 3600:
+        return None
+    user = get_user_by_id(uid)
+    if not user or not user_is_active(user) or not is_admin_user(user):
+        return None
+    return user
+
+
+def _admin_clear():
+    for k in ("admin_uid", "admin_at", "admin_name"):
+        session.pop(k, None)
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        user = _admin_session_user()
+        if user is None:
+            _admin_clear()
+            if request.path.startswith(ADMIN_BASE + "/api/"):
+                return ("", 404)
+            return redirect(ADMIN_BASE + "/login")
+        return f(*args, **kwargs)
+    return decorated
+
+
+def _stop_user_bot(uid, close_trades=False):
+    """Stop one user's bot (persisting the stop first so the supervisor never restarts it)."""
+    import asyncio
+    clear_bot_state(uid)
+    closed = None
+    sess = _live_session(uid)
+    if sess is not None and close_trades:
+        try:
+            closed = asyncio.run_coroutine_threadsafe(sess.close_all_manual(True), sess.loop).result(timeout=60)
+        except Exception as e:
+            log.error("admin close-all for user %s failed: %s", uid, e)
+    with _workers_lock:
+        sess = active_sessions.get(uid)
+        if sess is not None:
+            sess.stop(wait=True)
+            if not sess.alive:
+                active_sessions.pop(uid, None)
+    return closed
+
+
+@app.route(ADMIN_BASE + "/login", methods=["GET", "POST"])
+def admin_login():
+    if request.method == "POST":
+        ip = _client_ip()
+        fails, locked_until = _admin_fails.get(ip, (0, 0))
+        if locked_until > time.time():
+            flash("Too many attempts. Try again in a few minutes.", "error")
+            return render_template("admin_login.html", admin_base=ADMIN_BASE), 429
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = get_user(username)
+        ok = check_password_hash(user["password_hash"] if user else _DUMMY_HASH, password)
+        if user and ok and user_is_active(user) and is_admin_user(user):
+            _admin_fails.pop(ip, None)
+            session["admin_uid"], session["admin_at"], session["admin_name"] = user["id"], time.time(), user["username"]
+            session.permanent = True
+            log_activity(user["id"], "admin_login", "Signed in to the admin console")
+            return redirect(ADMIN_BASE + "/")
+        fails += 1
+        _admin_fails[ip] = (fails, time.time() + ADMIN_LOGIN_LOCK_SEC if fails >= ADMIN_LOGIN_MAX_FAILS else 0)
+        if fails >= ADMIN_LOGIN_MAX_FAILS:
+            _admin_fails[ip] = (0, time.time() + ADMIN_LOGIN_LOCK_SEC)
+        log.warning("Admin console: failed sign-in for '%s' from %s", username[:40], ip)
+        flash("Invalid credentials.", "error")
+    return render_template("admin_login.html", admin_base=ADMIN_BASE)
+
+
+@app.route(ADMIN_BASE + "/logout")
+def admin_logout():
+    user = _admin_session_user()
+    if user:
+        log_activity(user["id"], "admin_logout", "Signed out of the admin console")
+    _admin_clear()
+    return redirect(ADMIN_BASE + "/login")
+
+
+@app.route(ADMIN_BASE + "/")
+@admin_required
+def admin_page():
+    return render_template("admin.html", admin_base=ADMIN_BASE, username=session.get("admin_name", ""),
+                           admin_setting=bool(ADMIN_USERNAMES))
+
+
+@app.route(ADMIN_BASE + "/api/users")
+@admin_required
+def api_admin_users():
+    rows = list_users_admin()
+    for u in rows:
+        sess = active_sessions.get(u["id"])
+        running = bool(sess is not None and sess.alive)
+        u["bot_running"] = running
+        u["bot"] = ({"mode": sess.mode, "symbol": sess.symbol, "strategy": sess.strategy,
+                     "state": sess.status_dict().get("state")} if running else None)
+        u["is_admin"] = is_admin_user({"id": u["id"], "username": u["username"]})
+    return jsonify({"ok": True, "users": rows, "summary": {
+        "total": len(rows), "active": sum(1 for u in rows if u["is_active"]),
+        "deactivated": sum(1 for u in rows if not u["is_active"]),
+        "bots_running": sum(1 for u in rows if u["bot_running"]),
+        "max_bots": MAX_CONCURRENT_BOTS}})
+
+
+@app.route(ADMIN_BASE + "/api/users/<int:target>")
+@admin_required
+def api_admin_user_detail(target):
+    user = get_user_by_id(target)
+    if not user:
+        return jsonify({"ok": False, "error": "No such user"}), 404
+    acts, total = get_activity(target, 50, 0)
+    return jsonify({"ok": True, "username": user["username"], "activity": acts, "activity_total": total,
+                    "trades": get_recent_trades(target, 50), "stats_demo": get_stats(target, "demo"),
+                    "stats_live": get_stats(target, "live"), "settings": get_settings(target)})
+
+
+@app.route(ADMIN_BASE + "/api/users/<int:target>/active", methods=["POST"])
+@admin_required
+def api_admin_set_active(target):
+    me = _admin_session_user()
+    user = get_user_by_id(target)
+    if not user:
+        return jsonify({"ok": False, "error": "No such user"}), 404
+    data = request.get_json(silent=True) or {}
+    active = bool(data.get("active"))
+    if target == me["id"] and not active:
+        return jsonify({"ok": False, "error": "You cannot deactivate your own account."}), 400
+    if not active and is_admin_user(user):
+        return jsonify({"ok": False, "error": "Administrator accounts cannot be deactivated."}), 400
+    set_user_active(target, active)
+    closed = None
+    if active:
+        log_activity(target, "activated", "Account activated by admin {}".format(me["username"]))
+    else:
+        closed = _stop_user_bot(target, bool(data.get("close_trades")))
+        log_activity(target, "deactivated", "Account deactivated by admin {} (bot stopped{})".format(
+            me["username"], ", open trades closed" if data.get("close_trades") else ""))
+    return jsonify({"ok": True, "id": target, "is_active": active, "closed": closed})
+
+
+# ── Install-as-app (PWA): the trading app and the admin console are two SEPARATE installable apps ──
+@app.route("/manifest.webmanifest")
+def user_manifest_route():
+    return Response(json.dumps(pwa.user_manifest()), mimetype="application/manifest+json",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@app.route("/sw.js")
+def user_sw():
+    return Response(pwa.service_worker_js("synthbot-user-v1", "/offline"), mimetype="application/javascript",
+                    headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
+@app.route("/offline")
+def user_offline():
+    return pwa.OFFLINE_HTML % "No connection right now. Your bots keep running on the server; reconnect to see them."
+
+
+@app.route(ADMIN_BASE + "/manifest.webmanifest")
+def admin_manifest_route():
+    return Response(json.dumps(pwa.admin_manifest(ADMIN_BASE)), mimetype="application/manifest+json",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@app.route(ADMIN_BASE + "/sw.js")
+def admin_sw():
+    return Response(pwa.service_worker_js("synthbot-admin-v1", ADMIN_BASE + "/offline"),
+                    mimetype="application/javascript",
+                    headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": ADMIN_BASE + "/"})
+
+
+@app.route(ADMIN_BASE + "/offline")
+def admin_offline():
+    return pwa.OFFLINE_HTML % "No connection right now. Reconnect to use the admin console."
 
 
 # ── History: every trade and every action, kept forever ─────
@@ -661,7 +989,7 @@ def api_cloud():
 @socketio.on("connect")
 def on_connect():
     uid = session.get("user_id")
-    if uid:
+    if uid and user_is_active(get_user_by_id(uid)):
         join_room("user_{}".format(uid))
         emit("connected", {"message": "WebSocket connected"})
         # Browser just (re)connected: re-send charts/status/trades so the
@@ -687,6 +1015,8 @@ def on_disconnect():
 # ── Entry point ──────────────────────────────────────────────
 def main():
     init_db()
+    log.warning("Admin console address: %s%s", ADMIN_BASE + "/login",
+                "   (derived from SECRET_KEY - set ADMIN_PATH in Render to choose your own)" if ADMIN_PATH_IS_DEFAULT else "")
     start_supervisor()
     print("")
     print("  ==========================================")

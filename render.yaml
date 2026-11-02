@@ -13,6 +13,14 @@ services:
     envVars:
       - key: SECRET_KEY
         generateValue: true
+      - key: ADMIN_PATH                 # secret address of the admin console, e.g. /ctl-x7k29q (letters/digits/dashes). Tell nobody.
+        sync: false
+      - key: ADMIN_USERNAMES            # your own username(s), comma-separated: they get the Admin page
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY       # any long random text; encrypts users' saved Deriv tokens. Never change it later.
+        generateValue: true
+      - key: FIREBASE_SERVICE_ACCOUNT   # permanent accounts + history (see FIREBASE_SETUP.md)
+        sync: false
       - key: DERIV_APP_ID
         sync: false
       - key: DERIV_DEMO_TOKEN

@@ -211,6 +211,29 @@ DURATION_UNIT = os.getenv("CONTRACT_DURATION_UNIT", "m")
 # ── Web ──────────────────────────────────────────────────────
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
 SECRET_KEY_IS_DEFAULT = SECRET_KEY == "dev-secret"
+# ── Multi-user ────────────────────────────────────────────────
+# Admin accounts: comma-separated usernames (e.g. ADMIN_USERNAMES=john). Admins see the Admin page and are the
+# only users who may trade with the SERVER's own DERIV_DEMO_TOKEN / DERIV_LIVE_TOKEN. Everyone else connects their
+# own tokens on the dashboard. If this is empty, the very first account ever created is treated as the admin.
+ADMIN_USERNAMES = [u.strip().lower() for u in os.getenv("ADMIN_USERNAMES", "").split(",") if u.strip()]
+# The admin console lives at a SECRET address with its own login (it is not linked from anywhere in the app and
+# answers 404 to anyone who is not signed in as an admin). Choose your own, e.g. ADMIN_PATH=/control-room-7k2x.
+# If unset, one is derived from SECRET_KEY and printed once in the server log at start-up.
+import hashlib as _hl
+_ap = os.getenv("ADMIN_PATH", "").strip()
+if _ap:
+    ADMIN_PATH = "/" + _ap.strip().strip("/")
+else:
+    ADMIN_PATH = "/ops-" + _hl.sha256(("admin-path|" + os.getenv("SECRET_KEY", "dev-secret")).encode()).hexdigest()[:12]
+ADMIN_PATH_IS_DEFAULT = not _ap
+ADMIN_SESSION_HOURS = float(os.getenv("ADMIN_SESSION_HOURS", 12))   # admin must sign in again after this long
+ADMIN_LOGIN_MAX_FAILS = int(os.getenv("ADMIN_LOGIN_MAX_FAILS", 5))  # wrong passwords from one address before a pause
+ADMIN_LOGIN_LOCK_SEC = int(os.getenv("ADMIN_LOGIN_LOCK_SEC", 300))
+# Key used to encrypt users' saved Deriv tokens (falls back to SECRET_KEY). Keep it fixed.
+TOKEN_ENCRYPTION_KEY = os.getenv("TOKEN_ENCRYPTION_KEY", "").strip()
+# Each running bot is a thread + a Deriv connection; this protects a small server from being overloaded.
+MAX_CONCURRENT_BOTS = int(os.getenv("MAX_CONCURRENT_BOTS", 25))
+
 # A login stays valid for this many days (the cookie is permanent, not "until the browser closes").
 SESSION_DAYS = int(os.getenv("SESSION_DAYS", 3650))
 

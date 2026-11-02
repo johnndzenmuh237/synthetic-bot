@@ -6,6 +6,13 @@
 <title>{% block title %}SyntheticBot Pro{% endblock %}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="manifest" href="{% block manifest %}/manifest.webmanifest{% endblock %}">
+<meta name="theme-color" content="{% block theme %}#0b0e17{% endblock %}">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="{% block apptitle %}SyntheticBot{% endblock %}">
+<link rel="apple-touch-icon" href="{% block touchicon %}/static/icons/user-apple-180.png{% endblock %}">
+<link rel="icon" type="image/png" href="{% block favicon %}/static/icons/user-192.png{% endblock %}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 {% block head %}{% endblock %}
 </head>
@@ -13,7 +20,7 @@
 {% include "_icons.html" %}
 {% block body %}{% endblock %}
 <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+<script src="{{ url_for('static', filename='js/pwa.js') }}" data-sw="{% block sw_url %}/sw.js{% endblock %}" data-scope="{% block sw_scope %}/{% endblock %}"></script>
 {% block scripts %}{% endblock %}
 </body>
-</html>
 </html>

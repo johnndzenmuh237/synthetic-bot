@@ -769,3 +769,44 @@ html,body{
 .panel-title .panel-more{margin-left:auto;color:var(--accent);text-decoration:none;font-weight:700;font-size:12px}
 .panel-title .panel-more:hover{text-decoration:underline}
 .panel-title.has-more{display:flex;align-items:center;gap:6px}
+
+/* ── Deriv connection panel (per-user tokens) ───────────── */
+.admin-btn{margin-top:8px;border-color:var(--gold);color:var(--gold);background:#f59e0b14}
+.admin-btn:hover{background:var(--gold);color:#000}
+.conn-box{background:var(--card);border:1px solid var(--hover);border-radius:var(--r);padding:0}
+.conn-box summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;padding:11px 12px;font:700 13px var(--font);color:var(--t1)}
+.conn-box summary::-webkit-details-marker{display:none}
+.conn-badges{margin-left:auto;display:flex;gap:4px}
+.cb{font:700 9px var(--font);padding:2px 6px;border-radius:99px}
+.cb.on{background:#10b98122;color:var(--green)}.cb.off{background:#ef444422;color:var(--red)}
+.conn-help{font-size:11px;color:var(--t2);padding:0 12px 8px;line-height:1.5}
+.conn-row{padding:6px 12px 12px;border-top:1px solid var(--hover)}
+.conn-row label{display:block;font:600 11px var(--font);color:var(--t2);margin-bottom:4px}
+.conn-row input{width:100%;background:var(--input);color:var(--t1);border:1px solid var(--hover);border-radius:var(--rs);padding:8px;font:12px var(--mono)}
+.conn-actions{display:flex;gap:6px;margin-top:6px}
+.conn-btn{flex:1;background:var(--accent);color:#fff;border:0;border-radius:var(--rs);padding:7px 8px;font:700 11px var(--font);cursor:pointer}
+.conn-btn:disabled{opacity:.5}
+.conn-btn.conn-remove{flex:0 0 auto;background:transparent;border:1px solid var(--hover);color:var(--t2)}
+.conn-status{font-size:11px;color:var(--t2);margin-top:6px;word-break:break-word}
+.conn-status .ok{color:var(--green);font-weight:600}.conn-status .bad{color:var(--red)}
+
+/* ── Admin page ─────────────────────────────────────────── */
+.admin-page .alert{margin-bottom:14px}
+.admin-page code{background:var(--input);padding:1px 6px;border-radius:4px;font-family:var(--mono)}
+.adm-btn{background:var(--card);color:var(--t1);border:1px solid var(--hover);border-radius:var(--rs);padding:6px 10px;font:700 11px var(--font);cursor:pointer}
+.adm-btn:hover{background:var(--hover)}
+.adm-btn.adm-off{border-color:var(--red);color:var(--red)}.adm-btn.adm-off:hover{background:var(--red);color:#fff}
+.adm-btn.adm-on{border-color:var(--green);color:var(--green)}.adm-btn.adm-on:hover{background:var(--green);color:#000}
+.adm-modal{max-width:760px;width:94vw;max-height:88vh;overflow:auto}
+.adm-modal h4{margin:12px 0 6px;font:700 12px var(--font);color:var(--t2)}
+.hist-table .cb{margin-right:4px}
+.admin-page{max-width:1280px}
+
+/* ── Install app button ─────────────────────────────────── */
+.install-link{display:inline-flex;align-items:center;gap:6px;background:var(--aglow);color:var(--accent);border:1px solid var(--accent);
+  border-radius:var(--rs);padding:6px 10px;font:700 12px var(--font);cursor:pointer;margin-right:10px}
+.install-link[hidden],.install-ios[hidden]{display:none}
+.install-auth{display:flex;width:100%;justify-content:center;margin:14px 0 0;padding:10px}
+.install-ios{font-size:11px;color:var(--t2);margin-right:10px}
+.install-auth + .install-ios{text-align:center;margin:8px 0 0}
+.admin-theme .install-link{color:var(--gold);border-color:var(--gold);background:#f59e0b14}

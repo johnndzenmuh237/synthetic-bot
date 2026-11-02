@@ -94,6 +94,28 @@
       <a class="history-btn" href="/history">{{ ico('list') }} <span>Trade History</span> <small>all trades, profit &amp; activity</small></a>
     </div>
 
+    <!-- Each user's own Deriv tokens -->
+    <div class="sidebar-section">
+      <details class="conn-box" id="conn-box">
+        <summary>{{ ico('lock') }} Deriv connection <span class="conn-badges" id="conn-badges"></span></summary>
+        <p class="conn-help">Paste <b>your own</b> Deriv API token. It is stored encrypted and never shown again. Use a token that has <i>Trade</i> and <i>Read</i> access, created for this site's App ID.</p>
+        <div class="conn-row">
+          <label for="tok-demo">Demo token</label>
+          <input type="password" id="tok-demo" autocomplete="off" placeholder="Paste your DEMO token">
+          <div class="conn-actions"><button type="button" class="conn-btn" id="tok-demo-save">Save &amp; test</button>
+            <button type="button" class="conn-btn conn-remove" id="tok-demo-remove">Remove</button></div>
+          <div class="conn-status" id="tok-demo-status"></div>
+        </div>
+        <div class="conn-row">
+          <label for="tok-live">Live token</label>
+          <input type="password" id="tok-live" autocomplete="off" placeholder="Paste your LIVE token">
+          <div class="conn-actions"><button type="button" class="conn-btn" id="tok-live-save">Save &amp; test</button>
+            <button type="button" class="conn-btn conn-remove" id="tok-live-remove">Remove</button></div>
+          <div class="conn-status" id="tok-live-status"></div>
+        </div>
+      </details>
+    </div>
+
     <!-- Account -->
     <div class="sidebar-section">
       <div class="account-badge">
@@ -262,6 +284,8 @@
 
     <div class="sidebar-footer">
       <a href="/history" class="hist-link" title="All your trades and account activity">{{ ico('list') }} History</a>
+      <button type="button" class="install-link" data-install hidden>{{ ico('save') }} Install app</button>
+      <span class="install-ios" data-install-ios hidden>Install: Share &rarr; Add to Home Screen</span>
       <a href="/logout" class="logout-link" title="Log out — the bot keeps running">{{ ico('logout') }} Logout</a>
     </div>
   </aside>
@@ -395,6 +419,7 @@
 </script>
 {% endblock %}
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/tokens.js') }}"></script>
 <script>
   window.__loadLibs(function () {
     var s = document.createElement("script");

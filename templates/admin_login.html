@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Admin sign-in{% endblock %}
+{% block manifest %}{{ admin_base }}/manifest.webmanifest{% endblock %}
+{% block theme %}#f59e0b{% endblock %}
+{% block apptitle %}SB Admin{% endblock %}
+{% block touchicon %}/static/icons/admin-apple-180.png{% endblock %}
+{% block favicon %}/static/icons/admin-192.png{% endblock %}
+{% block sw_url %}{{ admin_base }}/sw.js{% endblock %}
+{% block sw_scope %}{{ admin_base }}/{% endblock %}
+{% block body %}
+<div class="auth-page admin-theme">
+  <div class="auth-card">
+    <div class="auth-logo"><span class="logo-icon" style="color:var(--gold)"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg></span><span class="logo-text">Admin <span class="logo-pro">Console</span></span></div>
+    <h2 class="auth-title">Administrator sign-in</h2>
+    <p class="auth-sub">Authorised administrators only.</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}<div class="alert alert-{{ cat }}">{{ msg }}</div>{% endfor %}
+    {% endwith %}
+    <form method="POST" class="auth-form" autocomplete="off">
+      <div class="field"><label>Username</label><input type="text" name="username" required autofocus autocomplete="username"></div>
+      <div class="field"><label>Password</label><input type="password" name="password" required autocomplete="current-password"></div>
+      <button type="submit" class="btn-primary full-width" style="background:var(--gold);color:#000">Sign in</button>
+    </form>
+    <button type="button" class="install-link install-auth" data-install hidden>Install admin app on this device</button>
+    <p class="install-ios" data-install-ios hidden>Install: Share &rarr; Add to Home Screen</p>
+  </div>
+</div>
+{% endblock %}

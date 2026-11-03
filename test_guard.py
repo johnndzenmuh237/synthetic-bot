@@ -35,6 +35,7 @@ class T80_Decision(unittest.TestCase):
 
 class T81_Engine(unittest.TestCase):
     def setUp(self):
+        bot_engine.GUARD_ENABLED = True
         self.s = tb.make(lot=10.0, maxpos=3, strategy="REVERSAL_SCALPER")
     def _open(self, n=0):
         async def go():
@@ -67,6 +68,10 @@ class T81_Engine(unittest.TestCase):
         for p in (1, 2, 3, 4.5, 6, 8, 9.5):
             self._tick(t, p)
         self.assertEqual(len(get_open_trades(self.s.user_id, "demo")), 1)
+    def tearDown(self):
+        bot_engine.GUARD_ENABLED = False
+    def test_off_by_default(self):
+        import config; self.assertFalse(config.GUARD_ENABLED)
     def test_disabled(self):
         old = bot_engine.GUARD_ENABLED; bot_engine.GUARD_ENABLED = False
         try:

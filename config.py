@@ -182,7 +182,7 @@ SELL_RATE_RETRIES  = int(os.getenv("SELL_RATE_RETRIES", 4))
 #                 its best profit - so a winner is banked and never turns into a loss. While it keeps climbing it runs.
 #  * COOLDOWN:    after a guard exit the bot waits GUARD_COOLDOWN_SEC before looking for the next entry.
 # For small stakes the amounts shrink with the stake (a % cap), so they still work with a $1 stake.
-GUARD_ENABLED      = os.getenv("GUARD_ENABLED", "true").lower() == "true"
+GUARD_ENABLED      = os.getenv("GUARD_ENABLED", "false").lower() == "true"   # OFF by default = bot behaves exactly as before
 GUARD_MAX_LOSS     = float(os.getenv("GUARD_MAX_LOSS", 2.0))
 GUARD_MAX_LOSS_PCT = float(os.getenv("GUARD_MAX_LOSS_PCT", 0.5))    # never more than this fraction of the stake
 GUARD_GIVEBACK     = float(os.getenv("GUARD_GIVEBACK", 2.0))

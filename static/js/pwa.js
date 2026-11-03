@@ -46,15 +46,32 @@
   if (!ios) show(true);                       // always offer it; if the browser has not offered the install prompt, explain how
   window.addEventListener("beforeinstallprompt", function (e) { e.preventDefault(); deferred = e; show(true); });
   window.addEventListener("appinstalled", function () { deferred = null; show(false); each("[data-install-ios]", function (b) { b.hidden = true; }); });
-  each("[data-install]", function (b) {
-    b.addEventListener("click", function () {
-      if (!deferred) {
-        help();
-        return;
-      }
-      deferred.prompt();
-      deferred.userChoice.then(function () { deferred = null; show(false); });
-    });
-  });
+  function install() {
+    if (!deferred) { help(); return; }
+    deferred.prompt();
+    deferred.userChoice.then(function () { deferred = null; show(false); });
+  }
+  each("[data-install]", function (b) { b.addEventListener("click", install); });
+
+  // Pop-up offer shown on screen (the buttons stay as a second option). "Not now" hides it for 3 days.
+  var KEY = "pwa-offer-" + (scope || "/");
+  function snoozed() { try { return Date.now() < Number(localStorage.getItem(KEY) || 0); } catch (e) { return false; } }
+  function snooze() { try { localStorage.setItem(KEY, String(Date.now() + 3 * 86400000)); } catch (e) {} }
+  function offer() {
+    if (document.getElementById("pwa-offer") || snoozed()) return;
+    var meta = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    var name = (meta && meta.content) || "this app";
+    var o = document.createElement("div"); o.id = "pwa-offer"; o.className = "pwa-offer";
+    o.innerHTML = '<div class="pwa-offer-card" role="dialog" aria-label="Install app">' +
+      '<div class="pwa-ico"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg></div>' +
+      '<div class="pwa-offer-txt"><b>Install ' + name + '</b><span>Open it in one tap from your home screen.</span></div>' +
+      '<div class="pwa-offer-btns"><button type="button" class="pwa-yes">Install</button>' +
+      '<button type="button" class="pwa-no">Not now</button></div></div>';
+    o.querySelector(".pwa-yes").onclick = function () { o.remove(); install(); };
+    o.querySelector(".pwa-no").onclick = function () { snooze(); o.remove(); };
+    document.body.appendChild(o);
+  }
+  window.addEventListener("appinstalled", function () { var o = document.getElementById("pwa-offer"); if (o) o.remove(); });
+  setTimeout(offer, 1500);
   if (ios) each("[data-install-ios]", function (b) { b.hidden = false; });
 })();

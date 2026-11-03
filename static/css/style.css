@@ -829,3 +829,27 @@ html,body{
 .pwa-card ol{text-align:left;margin:0 0 12px;padding:0 0 0 20px;color:var(--t1);font-size:13.5px;line-height:1.7}
 .pwa-card .pwa-small{font-size:12px;margin-bottom:16px}
 .pwa-ok{width:100%;background:var(--accent);color:#fff;border:0;border-radius:10px;padding:12px;font:700 14px var(--font);cursor:pointer}
+
+/* install pop-up (bottom sheet) */
+.pwa-offer{position:fixed;left:0;right:0;bottom:0;z-index:9998;display:flex;justify-content:center;padding:12px;pointer-events:none}
+.pwa-offer-card{pointer-events:auto;width:100%;max-width:440px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--sidebar);
+  border:1px solid var(--accent);border-radius:16px;padding:14px;color:var(--t1);box-shadow:0 12px 40px rgba(0,0,0,.6);animation:pwaup .35s ease-out}
+.pwa-offer .pwa-ico{margin:0;flex:0 0 44px;width:44px;height:44px}
+.pwa-offer-txt{flex:1;min-width:150px;display:flex;flex-direction:column;gap:2px;font-size:14px}
+.pwa-offer-txt span{color:var(--t2);font-size:12.5px}
+.pwa-offer-btns{display:flex;gap:8px;margin-left:auto}
+.pwa-yes{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 18px;font:700 14px var(--font);cursor:pointer}
+.pwa-no{background:transparent;color:var(--t2);border:1px solid var(--border,#2a3350);border-radius:10px;padding:10px 12px;font:600 13px var(--font);cursor:pointer}
+.admin-theme .pwa-yes,.pwa-offer .admin-yes{background:var(--gold);color:#000}
+@keyframes pwaup{from{transform:translateY(30px);opacity:0}to{transform:none;opacity:1}}
+.install-mini{padding:6px 10px;font-size:12px;margin-left:auto;margin-right:8px;white-space:nowrap}
+.install-mini + .nav-history{margin-left:0}
+@media (max-width:768px){.topbar-history,.topbar .install-link{display:none}}
+@media (max-width:440px){
+  .mobile-nav{gap:6px;padding-left:10px;padding-right:10px}
+  .mobile-logo{font-size:14px;gap:5px;min-width:0}
+  .mobile-logo .logo-icon{font-size:17px}
+  .install-mini,.mobile-nav .nav-history{padding:5px 7px;font-size:11px;gap:4px;margin-right:0}
+  .mobile-nav .hamburger{flex:0 0 auto}
+}
+@media (max-width:350px){.mobile-logo span:not(.logo-icon){display:none}}

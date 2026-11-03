@@ -175,6 +175,21 @@ REQ_GAP_OTHER      = float(os.getenv("REQ_GAP_OTHER", 0.1))
 RATE_LIMIT_RETRIES = int(os.getenv("RATE_LIMIT_RETRIES", 5))
 SELL_MIN_GAP_SEC   = float(os.getenv("SELL_MIN_GAP_SEC", 0.6))
 SELL_RATE_RETRIES  = int(os.getenv("SELL_RATE_RETRIES", 4))
+# ── Trade guard (every strategy) ─────────────────────────────────────────────────────────────
+# Protects each open trade on its own. All amounts are in account currency (USD).
+#  * LOSS CAP:    a trade whose floating loss reaches GUARD_MAX_LOSS is closed at once (never left to run to expiry).
+#  * PROFIT LOCK: once a trade is up GUARD_ARM_PROFIT, it is closed as soon as its profit falls GUARD_GIVEBACK below
+#                 its best profit - so a winner is banked and never turns into a loss. While it keeps climbing it runs.
+#  * COOLDOWN:    after a guard exit the bot waits GUARD_COOLDOWN_SEC before looking for the next entry.
+# For small stakes the amounts shrink with the stake (a % cap), so they still work with a $1 stake.
+GUARD_ENABLED      = os.getenv("GUARD_ENABLED", "true").lower() == "true"
+GUARD_MAX_LOSS     = float(os.getenv("GUARD_MAX_LOSS", 2.0))
+GUARD_MAX_LOSS_PCT = float(os.getenv("GUARD_MAX_LOSS_PCT", 0.5))    # never more than this fraction of the stake
+GUARD_GIVEBACK     = float(os.getenv("GUARD_GIVEBACK", 2.0))
+GUARD_GIVEBACK_PCT = float(os.getenv("GUARD_GIVEBACK_PCT", 0.5))    # of the stake, and never more than half the peak
+GUARD_ARM_PROFIT   = float(os.getenv("GUARD_ARM_PROFIT", 1.0))
+GUARD_ARM_PCT      = float(os.getenv("GUARD_ARM_PCT", 0.1))         # of the stake
+GUARD_COOLDOWN_SEC = float(os.getenv("GUARD_COOLDOWN_SEC", 60))
 POSITION_POLL_SEC  = float(os.getenv("POSITION_POLL_SEC", 3))   # how often open positions are re-priced
 TIMEFRAME_CHOICES  = {"M1": "1 minute", "M5": "5 minutes"}
 DEFAULT_TIMEFRAME  = "M1"

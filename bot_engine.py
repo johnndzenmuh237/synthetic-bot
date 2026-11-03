@@ -46,6 +46,8 @@ from config import (
     DEFAULT_STRATEGY, DEFAULT_LOSS_POLICY, ALLOW_HEDGE, MAX_OPEN_TRADES,
     CF_CONFIRM_SEC, CF_BAND_FRAC, CF_PROTECT_PROFIT, CF_ENTRY_RETRY_SEC, CF_MAX_TICK_AGE,
     POSITION_POLL_SEC, DEFAULT_TIMEFRAME, SELL_MIN_GAP_SEC, SELL_RATE_RETRIES,
+    GUARD_ENABLED, GUARD_MAX_LOSS, GUARD_MAX_LOSS_PCT, GUARD_GIVEBACK, GUARD_GIVEBACK_PCT,
+    GUARD_ARM_PROFIT, GUARD_ARM_PCT, GUARD_COOLDOWN_SEC,
 )
 from logger import log
 
@@ -557,6 +559,8 @@ class BotSession:
         ok, why = self.risk.check()
         if not ok:
             return False, why
+        if time.time() < self._entry_block_until:
+            return False, "Cooling down after a protective exit - waiting for the next opportunity"
         if self._last_order_epoch == closed_epoch:
             return False, "An order was already sent for this candle"
         if self.risk.positions_available() < 1:
@@ -775,6 +779,47 @@ class BotSession:
             self._emit_trade_update()
             self._emit_positions()
 
+    # ── Trade guard: loss cap + profit lock, for every strategy ──
+    @staticmethod
+    def guard_decision(stake, peak, profit):
+        """-> reason text if this trade must be closed now, else None. Pure function (easy to test)."""
+        stake = max(float(stake or 0), 0.0)
+        max_loss = min(GUARD_MAX_LOSS, stake * GUARD_MAX_LOSS_PCT) if stake else GUARD_MAX_LOSS
+        if max_loss > 0 and profit <= -max_loss + 1e-9:
+            return "Loss cap: closed at {:+.2f} (limit -{:.2f}) - waiting for the next opportunity".format(profit, max_loss)
+        arm = min(GUARD_ARM_PROFIT, stake * GUARD_ARM_PCT) if stake else GUARD_ARM_PROFIT
+        if peak >= arm and peak > 0:
+            giveback = min(GUARD_GIVEBACK, (stake * GUARD_GIVEBACK_PCT) if stake else GUARD_GIVEBACK, peak * 0.5)
+            floor = max(peak - giveback, 0.0)
+            if profit <= floor + 1e-9:
+                return "Profit locked: peak {:+.2f} pulled back to {:+.2f} - taking profit".format(peak, profit)
+        return None
+
+    async def _guard_exits(self):
+        if not GUARD_ENABLED:
+            return
+        now = time.time()
+        jobs = []
+        for t in get_open_trades(self.user_id, self.mode):
+            tid = t["id"]
+            if t["status"] != "OPEN" or tid not in self.pnl_now:
+                continue
+            if tid in self._selling or now < self._sell_block.get(tid, (0, 0))[0]:
+                continue
+            profit = self.pnl_now[tid]
+            reason = self.guard_decision(_num(t["stake"]), self.pnl_peak.get(tid, profit), profit)
+            if reason:
+                self._selling.add(tid)
+                jobs.append(self._follow_close(t, reason))
+        if not jobs:
+            return
+        results = await asyncio.gather(*jobs, return_exceptions=True)
+        if any(r is True for r in results):
+            self._entry_block_until = max(self._entry_block_until, time.time() + GUARD_COOLDOWN_SEC)
+            await self._refresh_balance()
+            self._emit_trade_update()
+            self._emit_positions()
+
     async def _follow_close(self, t, reason):
         """Close ONE position. A failure here never affects any other position."""
         try:
@@ -933,6 +978,7 @@ class BotSession:
                     await self._reconcile_trades()
                 if self.strategy == "CANDLE_FOLLOW" and CF_PROTECT_PROFIT:
                     await self._follow_exits(self.tracker.zone)
+                await self._guard_exits()
                 self._emit_positions()
             except asyncio.CancelledError:
                 raise

@@ -75,14 +75,11 @@ self.addEventListener('fetch', function (e) {
     e.respondWith(fetch(req).catch(function () { return caches.match(OFFLINE); }));
     return;
   }
-  if (url.pathname.indexOf('/static/') === 0) {                        /* static files: fast, refreshed in background */
-    e.respondWith(caches.open(CACHE).then(function (c) {
-      return c.match(req).then(function (hit) {
-        var net = fetch(req).then(function (r) { if (r && r.ok) c.put(req, r.clone()); return r; })
-                            .catch(function () { return hit; });
-        return hit || net;
-      });
-    }));
+  if (url.pathname.indexOf('/static/') === 0) {                        /* static files: newest from the network, cache only when offline */
+    e.respondWith(fetch(req).then(function (r) {
+      if (r && r.ok) { var copy = r.clone(); caches.open(CACHE).then(function (c) { c.put(req, copy); }); }
+      return r;
+    }).catch(function () { return caches.match(req); }));
   }
 });
 """ % (json.dumps(cache_name), json.dumps(offline_url))

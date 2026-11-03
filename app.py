@@ -879,7 +879,7 @@ def user_manifest_route():
 
 @app.route("/sw.js")
 def user_sw():
-    return Response(pwa.service_worker_js("synthbot-user-v1", "/offline"), mimetype="application/javascript",
+    return Response(pwa.service_worker_js("synthbot-user-v2", "/offline"), mimetype="application/javascript",
                     headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
 
 
@@ -896,7 +896,7 @@ def admin_manifest_route():
 
 @app.route(ADMIN_BASE + "/sw.js")
 def admin_sw():
-    return Response(pwa.service_worker_js("synthbot-admin-v1", ADMIN_BASE + "/offline"),
+    return Response(pwa.service_worker_js("synthbot-admin-v2", ADMIN_BASE + "/offline"),
                     mimetype="application/javascript",
                     headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": ADMIN_BASE + "/"})
 

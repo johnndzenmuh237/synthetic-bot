@@ -817,6 +817,15 @@ html,body{
 .connect-banner[hidden]{display:none}
 .connect-banner span{color:var(--t2)}
 .connect-banner .conn-btn{padding:9px 16px;font-weight:700}
-.install-mini{padding:5px 9px;font-size:12px;margin-left:auto;margin-right:8px}
-@media (min-width:769px){.install-mini{display:none}}
-.install-mini + .nav-history{margin-left:0}
+
+/* install help dialog */
+.pwa-help{position:fixed;inset:0;z-index:9999;background:rgba(5,8,16,.72);display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(3px)}
+.pwa-card{width:100%;max-width:360px;background:var(--sidebar);border:1px solid var(--accent);border-radius:16px;padding:24px 22px 20px;
+  text-align:center;color:var(--t1);box-shadow:0 20px 60px rgba(0,0,0,.55)}
+.pwa-ico{width:48px;height:48px;margin:0 auto 12px;border-radius:14px;background:var(--aglow);color:var(--accent);display:flex;align-items:center;justify-content:center}
+.pwa-ico .icon{width:24px;height:24px}
+.pwa-card h3{margin:0 0 6px;font-size:18px}
+.pwa-card p{margin:0 0 12px;color:var(--t2);font-size:13px;line-height:1.5}
+.pwa-card ol{text-align:left;margin:0 0 12px;padding:0 0 0 20px;color:var(--t1);font-size:13.5px;line-height:1.7}
+.pwa-card .pwa-small{font-size:12px;margin-bottom:16px}
+.pwa-ok{width:100%;background:var(--accent);color:#fff;border:0;border-radius:10px;padding:12px;font:700 14px var(--font);cursor:pointer}

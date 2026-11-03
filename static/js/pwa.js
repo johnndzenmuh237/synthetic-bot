@@ -10,6 +10,22 @@
       navigator.serviceWorker.register(sw, { scope: scope || "/" }).catch(function () {});
     });
   }
+  function help() {
+    if (document.getElementById("pwa-help")) return;
+    var o = document.createElement("div"); o.id = "pwa-help"; o.className = "pwa-help";
+    o.innerHTML = '<div class="pwa-card" role="dialog" aria-modal="true" aria-labelledby="pwa-h">' +
+      '<div class="pwa-ico"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg></div>' +
+      '<h3 id="pwa-h">Install this app</h3>' +
+      '<p>Add it to your device for one-tap access, like any other app.</p>' +
+      '<ol><li>Open your browser menu <b>&#8942;</b> (top right)</li>' +
+      '<li>Choose <b>Install app</b> or <b>Add to Home screen</b></li>' +
+      '<li>Confirm &mdash; the icon appears on your home screen</li></ol>' +
+      '<p class="pwa-small">On a computer, use the install icon at the right end of the address bar.</p>' +
+      '<button type="button" class="pwa-ok">Got it</button></div>';
+    function close() { o.remove(); }
+    o.addEventListener("click", function (e) { if (e.target === o || (e.target.className || "") === "pwa-ok") close(); });
+    document.body.appendChild(o);
+  }
   var standalone = (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
   var deferred = null;
   function each(sel, fn) { [].forEach.call(document.querySelectorAll(sel), fn); }
@@ -23,8 +39,7 @@
   each("[data-install]", function (b) {
     b.addEventListener("click", function () {
       if (!deferred) {
-        alert("To install: open your browser menu (the three dots, top right) and choose \"Install app\" or \"Add to Home screen\". " +
-              "On a computer, look for the install icon at the right end of the address bar.");
+        help();
         return;
       }
       deferred.prompt();

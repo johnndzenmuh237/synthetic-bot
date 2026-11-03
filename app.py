@@ -156,6 +156,11 @@ def _token_source(uid, mode):
     return "none"
 
 
+def _has_connection(uid):
+    """True when this user can trade at all: their own demo/live token, or (admin only) the server's token."""
+    return _token_source(uid, "demo") != "none" or _token_source(uid, "live") != "none"
+
+
 def _make_session(uid, cfg):
     sid = "user_{}".format(uid)
 
@@ -339,6 +344,10 @@ def dashboard():
     uid      = session["user_id"]
     user     = get_user_by_id(uid)
     settings = get_settings(uid)
+    if not _has_connection(uid):
+        # A new user sees ONLY the "connect your Deriv token" page until a token is saved.
+        # (The admin, whose tokens run on the server, goes straight to the dashboard.)
+        return render_template("connect.html", username=user["username"])
     return render_template("dashboard.html",
                            username=user["username"],
                            symbols=SYMBOLS,

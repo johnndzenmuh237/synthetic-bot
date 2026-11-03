@@ -42,6 +42,7 @@
         btn.disabled = false;
         if (d.ok) {
           inp.value = ""; render(d.tokens);
+          if ($("gate-root")) { el.innerHTML = '<span class="ok">Connected - opening your dashboard...</span>'; setTimeout(function () { location.href = "/dashboard"; }, 900); return; }
           el.innerHTML += ' &middot; account ' + (d.account.account_id || "") +
             (d.account.balance != null ? " (" + Number(d.account.balance).toFixed(2) + " " + (d.account.currency || "") + ")" : "");
           toast(mode.toUpperCase() + " token connected");

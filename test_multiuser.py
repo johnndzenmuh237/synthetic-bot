@@ -354,3 +354,28 @@ class T76_ClearEndpoint(unittest.TestCase):
         self.assertEqual(kinds, ["history_cleared"])                                                    # an audit line remains
         self.assertEqual(b.get("/api/history").get_json()["total"], 1)                                  # other user untouched
         self.assertIn(b"Clear history", a.get("/history").data)
+
+
+class T77_ConnectGate(unittest.TestCase):
+    def test_new_user_sees_only_the_connect_page_until_a_token_is_saved(self):
+        appmod._make_session = ORIG_MAKE
+        c = client("gate_new")
+        page = c.get("/dashboard").get_data(as_text=True)
+        self.assertIn("Connect your Deriv", page); self.assertIn('id="tok-demo"', page)
+        for hidden in ("Open Positions", "SESSION STATS", "dashboard.js", "Live Signal Feed", "id=\"btn-start\""):
+            self.assertNotIn(hidden, page)
+        self.assertEqual(c.post("/api/bot/start", json={"mode": "demo"}).status_code, 400)           # cannot start without a token
+        self.assertEqual(c.post("/api/tokens", json={"mode": "demo", "token": DEMO_A}).status_code, 200)
+        page = c.get("/dashboard").get_data(as_text=True)                                              # now the full dashboard
+        self.assertIn("Open Positions", page); self.assertIn("dashboard.js", page)
+        c.post("/api/tokens/remove", json={"mode": "demo"})                                            # removing it gates again
+        self.assertIn("Connect your Deriv", c.get("/dashboard").get_data(as_text=True))
+    def test_admin_with_server_tokens_goes_straight_to_the_dashboard(self):
+        boss = client("boss")
+        old = (appmod.DERIV_DEMO_TOKEN, appmod.DERIV_LIVE_TOKEN)
+        appmod.DERIV_DEMO_TOKEN = "pat_server_demo_token"
+        try:
+            self.assertIn("Open Positions", boss.get("/dashboard").get_data(as_text=True))
+        finally:
+            appmod.DERIV_DEMO_TOKEN, appmod.DERIV_LIVE_TOKEN = old
+        self.assertIn("Connect your Deriv", client("alice").get("/dashboard").get_data(as_text=True))   # admin WITHOUT a server token is gated too

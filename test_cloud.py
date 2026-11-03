@@ -379,6 +379,7 @@ class T44_Symbols(unittest.TestCase):
         c = app.app.test_client()
         c.post("/register", data={"username": "gold_user", "password": "password123", "confirm_password": "password123"})
         c.post("/login", data={"username": "gold_user", "password": "password123"})
+        import token_vault; database.set_user_token(database.get_user("gold_user")["id"], "demo", token_vault.encrypt("pat_test_token_1234"))   # connected users see the dashboard
         r = c.post("/api/settings", json={"symbol": "frxXAUUSD"}).get_json()
         self.assertTrue(r["ok"]); self.assertEqual(r["saved"]["symbol"], "frxXAUUSD")
         self.assertIn("frxXAUUSD", c.get("/dashboard").data.decode())
@@ -388,6 +389,7 @@ class T44_Symbols(unittest.TestCase):
         c = app.app.test_client()
         c.post("/register", data={"username": "sym_user", "password": "password123", "confirm_password": "password123"})
         c.post("/login", data={"username": "sym_user", "password": "password123"})
+        import token_vault; database.set_user_token(database.get_user("sym_user")["id"], "demo", token_vault.encrypt("pat_test_token_1234"))   # connected users see the dashboard
         for s in ("1HZ15V", "1HZ30V", "1HZ90V", "1HZ150V", "1HZ250V"):
             r = c.post("/api/settings", json={"symbol": s}).get_json()
             self.assertTrue(r["ok"], (s, r))

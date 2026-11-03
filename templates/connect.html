@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Connect your Deriv account — SyntheticBot Pro{% endblock %}
+{% macro ico(name, cls='') %}<svg class="icon {{ cls }}" aria-hidden="true"><use href="#i-{{ name }}"/></svg>{% endmacro %}
+{% block body %}
+<div class="gate-page" id="gate-root">
+  <div class="gate-card">
+    <div class="auth-logo"><span class="logo-icon">{{ ico('zap') }}</span><span class="logo-text">SyntheticBot <span class="logo-pro">PRO</span></span></div>
+    <h2 class="auth-title">Welcome, {{ username }}</h2>
+    <p class="auth-sub">One last step: connect <b>your own</b> Deriv account. The bot only trades with your token &mdash; the dashboard opens as soon as it is connected.</p>
+
+    <ol class="gate-steps">
+      <li>Sign in to your Deriv account and open <b>Settings &rarr; API token</b>.</li>
+      <li>Create a token with <b>Read</b> and <b>Trade</b> access (one for your Demo account, and one for Live if you want it).</li>
+      <li>Paste it below and press <b>Save &amp; test</b>.</li>
+    </ol>
+
+    <details class="conn-box gate-box" id="conn-box" open>
+      <summary>{{ ico('lock') }} Deriv connection <span class="conn-badges" id="conn-badges"></span></summary>
+      <p class="conn-help">Your token is checked with Deriv, stored encrypted and never shown again. You can remove it at any time.</p>
+      <div class="conn-row">
+        <label for="tok-demo">Demo token</label>
+        <input type="password" id="tok-demo" autocomplete="off" placeholder="Paste your DEMO token">
+        <div class="conn-actions"><button type="button" class="conn-btn" id="tok-demo-save">Save &amp; test</button>
+          <button type="button" class="conn-btn conn-remove" id="tok-demo-remove">Remove</button></div>
+        <div class="conn-status" id="tok-demo-status"></div>
+      </div>
+      <div class="conn-row">
+        <label for="tok-live">Live token <span class="gate-opt">(optional)</span></label>
+        <input type="password" id="tok-live" autocomplete="off" placeholder="Paste your LIVE token">
+        <div class="conn-actions"><button type="button" class="conn-btn" id="tok-live-save">Save &amp; test</button>
+          <button type="button" class="conn-btn conn-remove" id="tok-live-remove">Remove</button></div>
+        <div class="conn-status" id="tok-live-status"></div>
+      </div>
+    </details>
+
+    <button type="button" class="install-link install-auth" data-install>Install app on this device</button>
+    <p class="install-ios" data-install-ios hidden>Install: Share &rarr; Add to Home Screen</p>
+    <p class="auth-switch"><a href="/logout">Log out</a></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/tokens.js') }}"></script>{% endblock %}

@@ -48,6 +48,7 @@ from config import (
     POSITION_POLL_SEC, DEFAULT_TIMEFRAME, SELL_MIN_GAP_SEC, SELL_RATE_RETRIES,
     GUARD_ENABLED, GUARD_MAX_LOSS, GUARD_MAX_LOSS_PCT, GUARD_GIVEBACK, GUARD_GIVEBACK_PCT,
     GUARD_ARM_PROFIT, GUARD_ARM_PCT, GUARD_COOLDOWN_SEC,
+    PROFIT_RULES, PROFIT_BASE_STAKE, PROFIT_LOCK_AT, PROFIT_LOCK_FLOOR, PROFIT_TRAIL, PROFIT_TARGET, PROFIT_COOLDOWN_SEC,
 )
 from logger import log
 
@@ -795,6 +796,49 @@ class BotSession:
                 return "Profit locked: peak {:+.2f} pulled back to {:+.2f} - taking profit".format(peak, profit)
         return None
 
+    # ── Profit lock + target (every strategy) ──
+    @staticmethod
+    def profit_decision(stake, peak, profit):
+        """-> reason text if this trade must be closed now, else None.
+        * profit reaches the TARGET ($5)                      -> take it and exit
+        * profit has reached the LOCK ($2.40) at some point   -> from then on it must not fall back below the floor
+          ($2.00) or more than TRAIL ($1.00) under its best profit; while it keeps climbing it keeps running.
+        Amounts are for a $10 stake and scale with the stake."""
+        k = (float(stake) / PROFIT_BASE_STAKE) if stake and PROFIT_BASE_STAKE else 1.0
+        target, lock, floor, trail = PROFIT_TARGET * k, PROFIT_LOCK_AT * k, PROFIT_LOCK_FLOOR * k, PROFIT_TRAIL * k
+        if profit >= target - 1e-9:
+            return "Profit target reached: {:+.2f} (target {:.2f}) - taking profit".format(profit, target)
+        if peak >= lock - 1e-9:
+            stop = max(floor, peak - trail)
+            if profit <= stop + 1e-9:
+                return "Profit locked: peak {:+.2f} pulled back to {:+.2f} - taking profit".format(peak, profit)
+        return None
+
+    async def _profit_exits(self):
+        if not PROFIT_RULES:
+            return
+        now = time.time()
+        jobs = []
+        for t in get_open_trades(self.user_id, self.mode):
+            tid = t["id"]
+            if t["status"] != "OPEN" or tid not in self.pnl_now:
+                continue
+            if tid in self._selling or now < self._sell_block.get(tid, (0, 0))[0]:
+                continue
+            profit = self.pnl_now[tid]
+            reason = self.profit_decision(_num(t["stake"]), self.pnl_peak.get(tid, profit), profit)
+            if reason:
+                self._selling.add(tid)
+                jobs.append(self._follow_close(t, reason))
+        if not jobs:
+            return
+        results = await asyncio.gather(*jobs, return_exceptions=True)
+        if any(r is True for r in results):
+            self._entry_block_until = max(self._entry_block_until, time.time() + PROFIT_COOLDOWN_SEC)
+            await self._refresh_balance()
+            self._emit_trade_update()
+            self._emit_positions()
+
     async def _guard_exits(self):
         if not GUARD_ENABLED:
             return
@@ -979,6 +1023,7 @@ class BotSession:
                 if self.strategy == "CANDLE_FOLLOW" and CF_PROTECT_PROFIT:
                     await self._follow_exits(self.tracker.zone)
                 await self._guard_exits()
+                await self._profit_exits()
                 self._emit_positions()
             except asyncio.CancelledError:
                 raise

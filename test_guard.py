@@ -83,3 +83,67 @@ class T81_Engine(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+P = bot_engine.BotSession.profit_decision
+
+
+class T82_ProfitRules(unittest.TestCase):
+    def test_runs_until_the_lock_level(self):
+        for peak, p in ((0.0, -4.0), (0.0, 1.0), (1.5, 0.2), (2.39, 2.39), (2.39, 1.0)):
+            self.assertIsNone(P(10, peak, p), (peak, p))          # below $2.40 nothing closes the trade
+    def test_locked_trade_never_goes_red_and_exits_on_pullback(self):
+        self.assertIsNone(P(10, 2.4, 2.4)); self.assertIsNone(P(10, 2.4, 2.2))
+        self.assertIn("Profit locked", P(10, 2.4, 2.0))            # floor $2.00
+        self.assertIn("Profit locked", P(10, 3.4, 2.4))            # peak 3.4 -> exit at 2.4
+        self.assertIsNone(P(10, 3.4, 2.9))
+        self.assertIn("Profit locked", P(10, 4.5, 3.5))
+    def test_keeps_running_while_climbing_then_exits_at_target(self):
+        peak = 0
+        for p in (0.5, 2.4, 3.0, 3.8, 4.4, 4.9):
+            peak = max(peak, p); self.assertIsNone(P(10, peak, p), p)
+        self.assertIn("Profit target", P(10, 4.9, 5.0)); self.assertIn("Profit target", P(10, 5.3, 6.1))
+    def test_amounts_scale_with_the_stake(self):
+        self.assertIn("Profit target", P(5, 2.5, 2.5))             # $5 stake: target 2.50
+        self.assertIsNone(P(5, 1.0, 1.0)); self.assertIn("Profit locked", P(5, 1.2, 1.0))
+
+
+class T83_ProfitEngine(unittest.TestCase):
+    def setUp(self):
+        self.s = tb.make(lot=10.0, maxpos=3, strategy="REVERSAL_SCALPER")
+    def _open(self):
+        tb.run(self.s, lambda: tb.trade(self.s, "BUY", 0))
+        return get_open_trades(self.s.user_id, "demo")[-1]
+    def _tick(self, t, profit):
+        async def go():
+            self.s.broker.contracts[str(t["contract_id"])]["profit"] = profit
+            await self.s._reconcile_trades()
+            await self.s._profit_exits()
+        tb.run(self.s, go)
+    def _open_count(self):
+        return len(get_open_trades(self.s.user_id, "demo"))
+    def test_trade_runs_through_losses_and_small_profits(self):
+        t = self._open()
+        for p in (-6.0, -2.0, 0.5, 1.9, 2.3):
+            self._tick(t, p); self.assertEqual(self._open_count(), 1, p)       # no loss cap, no early exit
+    def test_lock_then_pullback_exits_in_profit_and_waits(self):
+        t = self._open()
+        for p in (1.0, 2.5, 3.4, 3.0): self._tick(t, p); self.assertEqual(self._open_count(), 1, p)
+        self._tick(t, 2.4)
+        self.assertEqual(self._open_count(), 0)
+        row = get_trade(self.s.user_id, t["id"])
+        self.assertEqual(row["status"], "WIN"); self.assertGreaterEqual(row["pnl"], 2.0)
+        ok, why = self.s._entry_allowed(tb.sig("BUY"), 6000)
+        self.assertFalse(ok); self.assertIn("Cooling down", why)
+    def test_exit_at_five(self):
+        t = self._open()
+        for p in (2.5, 3.5, 4.5): self._tick(t, p)
+        self.assertEqual(self._open_count(), 1)
+        self._tick(t, 5.1)
+        self.assertEqual(self._open_count(), 0); self.assertEqual(get_trade(self.s.user_id, t["id"])["status"], "WIN")
+    def test_can_be_switched_off(self):
+        old = bot_engine.PROFIT_RULES; bot_engine.PROFIT_RULES = False
+        try:
+            t = self._open(); self._tick(t, 7.0); self.assertEqual(self._open_count(), 1)
+        finally:
+            bot_engine.PROFIT_RULES = old

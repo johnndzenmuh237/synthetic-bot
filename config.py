@@ -190,7 +190,20 @@ GUARD_GIVEBACK_PCT = float(os.getenv("GUARD_GIVEBACK_PCT", 0.5))    # of the sta
 GUARD_ARM_PROFIT   = float(os.getenv("GUARD_ARM_PROFIT", 1.0))
 GUARD_ARM_PCT      = float(os.getenv("GUARD_ARM_PCT", 0.1))         # of the stake
 GUARD_COOLDOWN_SEC = float(os.getenv("GUARD_COOLDOWN_SEC", 60))
-POSITION_POLL_SEC  = float(os.getenv("POSITION_POLL_SEC", 3))   # how often open positions are re-priced
+# ── Long-running trades + profit lock (every strategy) ───────────────────────────────────────
+# A Rise/Fall contract always has an end time, so "no expiry" = the LONGEST duration Deriv accepts (tried in this
+# order; the first one Deriv accepts for that symbol is remembered). The bot's own rules below close the trade first.
+LONG_TRADES        = os.getenv("LONG_TRADES", "true").lower() == "true"
+LONG_TRADE_DURATIONS = os.getenv("LONG_TRADE_DURATIONS", "1d,12h,4h,2h,1h,30m,15m")
+# Profit rules, amounts for a $10 stake (they scale with the stake: a $5 stake uses half of each amount).
+PROFIT_RULES       = os.getenv("PROFIT_RULES", "true").lower() == "true"
+PROFIT_BASE_STAKE  = float(os.getenv("PROFIT_BASE_STAKE", 10))
+PROFIT_LOCK_AT     = float(os.getenv("PROFIT_LOCK_AT", 2.40))     # profit that switches the lock on
+PROFIT_LOCK_FLOOR  = float(os.getenv("PROFIT_LOCK_FLOOR", 2.00))   # once locked, never let the trade fall below this
+PROFIT_TRAIL       = float(os.getenv("PROFIT_TRAIL", 1.00))        # once locked, exit if profit falls this far below its best
+PROFIT_TARGET      = float(os.getenv("PROFIT_TARGET", 5.00))       # take the profit and exit here
+PROFIT_COOLDOWN_SEC = float(os.getenv("PROFIT_COOLDOWN_SEC", 60))  # wait this long for the next opportunity after an exit
+POSITION_POLL_SEC  = float(os.getenv("POSITION_POLL_SEC", 2))   # how often open positions are re-priced
 TIMEFRAME_CHOICES  = {"M1": "1 minute", "M5": "5 minutes"}
 DEFAULT_TIMEFRAME  = "M1"
 

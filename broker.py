@@ -11,7 +11,7 @@ from config import (
     DERIV_WS_URL, DERIV_APP_ID,
     DERIV_REST_BASE, DERIV_OTP_TTL_SEC,
     DERIV_DEMO_TOKEN, DERIV_LIVE_TOKEN,
-    CANDLE_COUNT, DURATION, DURATION_UNIT, TIMEFRAMES,
+    CANDLE_COUNT, DURATION, DURATION_UNIT, TIMEFRAMES, LONG_TRADES, LONG_TRADE_DURATIONS,
     REQ_GAP_PROPOSAL, REQ_GAP_BUY, REQ_GAP_SELL, REQ_GAP_CONTRACT, REQ_GAP_OTHER, RATE_LIMIT_RETRIES,
 )
 from logger import log
@@ -409,7 +409,42 @@ class DerivBroker:
             log.error("get_balance error: %s", e)
         return self.balance
 
+    @staticmethod
+    def _duration_ladder():
+        """[(number, unit), ...] longest first, from LONG_TRADE_DURATIONS ('1d,12h,4h,...')."""
+        out = []
+        for part in str(LONG_TRADE_DURATIONS).split(","):
+            part = part.strip().lower()
+            if len(part) >= 2 and part[:-1].isdigit() and part[-1] in "smhd":
+                out.append((int(part[:-1]), part[-1]))
+        return out or [(DURATION, DURATION_UNIT)]
+
     async def _proposal(self, symbol, ctype, stake):
+        """Long trades: use the longest duration Deriv accepts for this symbol (remembered after the first success).
+        A rejection that is not about the duration is raised straight away."""
+        if not LONG_TRADES:
+            return await self._proposal_for(symbol, ctype, stake, DURATION, DURATION_UNIT)
+        cache = self.__dict__.setdefault("_dur_ok", {})
+        ladder = [cache[symbol]] if symbol in cache else self._duration_ladder()
+        last_exc = None
+        for dur, unit in ladder:
+            try:
+                prop = await self._proposal_for(symbol, ctype, stake, dur, unit)
+                if cache.get(symbol) != (dur, unit):
+                    cache[symbol] = (dur, unit)
+                    log.info("Trade duration for %s: %d%s (longest accepted by Deriv)", symbol, dur, unit)
+                return prop
+            except ConnectionError:
+                raise
+            except Exception as e:
+                last_exc = e
+                if "duration" not in str(e).lower() and "expir" not in str(e).lower():
+                    raise
+                cache.pop(symbol, None)
+                log.warning("Duration %d%s not accepted for %s (%s) - trying a shorter one", dur, unit, symbol, e)
+        raise last_exc
+
+    async def _proposal_for(self, symbol, ctype, stake, dur, unit):
         """Deriv's NEW API calls the instrument field `underlying_symbol`; the old
         one called it `symbol`. Try the new name first, fall back to the old one
         if Deriv rejects it, and remember whichever works."""
@@ -422,8 +457,8 @@ class DerivBroker:
                 "contract_type": ctype,
                 "currency":      self.currency,
                 key:             symbol,
-                "duration":      DURATION,
-                "duration_unit": DURATION_UNIT,
+                "duration":      dur,
+                "duration_unit": unit,
             }
             try:
                 prop = await self._send(payload, timeout=15)

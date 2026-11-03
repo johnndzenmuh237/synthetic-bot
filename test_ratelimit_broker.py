@@ -101,3 +101,43 @@ class T51_BrokerRateLimit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class T52_LongTrades(unittest.TestCase):
+    def test_longest_duration_deriv_accepts_is_used_and_remembered(self):
+        sent = []
+        class WS(FakeWS):
+            async def send(self, raw):
+                p = json.loads(raw)
+                if "proposal" in p and "duration" in p:
+                    sent.append((p["duration"], p["duration_unit"]))
+                    if (p["duration"], p["duration_unit"]) in ((1, "d"), (12, "h")):
+                        fut = self.br._pending.get(p["req_id"])
+                        asyncio.get_event_loop().call_soon(lambda: fut.set_exception(
+                            B.DerivError("Trading is not offered for this duration.", "ContractBuyValidationError")))
+                        return
+                return await super().send(raw)
+        async def go():
+            b = B.DerivBroker("demo"); b.connected = True; b.ws = WS(b)
+            r1 = await b.place_trade("R_75", "BUY", 1.0)
+            r2 = await b.place_trade("R_75", "SELL", 1.0)
+            return r1, r2
+        g = dict(B._GAPS); B._GAPS.update(proposal=0.01, buy=0.01, sell=0.01, proposal_open_contract=0.01)
+        try:
+            r1, r2 = asyncio.run(go())
+        finally:
+            B._GAPS.clear(); B._GAPS.update(g)
+        self.assertTrue(r1 and r2)
+        self.assertEqual(sent[:3], [(1, "d"), (12, "h"), (4, "h")])        # walks down the ladder once ...
+        self.assertEqual(sent[3], (4, "h"))                                # ... then remembers what worked
+    def test_other_rejections_are_not_retried_with_other_durations(self):
+        class WS(FakeWS):
+            async def send(self, raw):
+                p = json.loads(raw); self.sent.append(p)
+                fut = self.br._pending.get(p["req_id"])
+                asyncio.get_event_loop().call_soon(lambda: fut.set_exception(B.DerivError("Market is closed", "MarketIsClosed")))
+        async def go():
+            b = B.DerivBroker("demo"); b.connected = True; b.ws = WS(b)
+            return await b.place_trade("R_75", "BUY", 1.0), b
+        r, b = asyncio.run(go())
+        self.assertEqual(r, {}); self.assertIn("Market is closed", b.last_error); self.assertEqual(len(b.ws.sent), 1)

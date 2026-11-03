@@ -71,9 +71,10 @@ async def fetch_accounts(token, app_id=None):
 
 
 class DerivBroker:
-    def __init__(self, mode="demo", account_id=""):
+    def __init__(self, mode="demo", account_id="", token=None):
         self.mode        = mode
-        self.token       = DERIV_DEMO_TOKEN if mode == "demo" else DERIV_LIVE_TOKEN
+        # `token` = this user's own Deriv token. Only when it is None does the server's token apply.
+        self.token       = token if token is not None else (DERIV_DEMO_TOKEN if mode == "demo" else DERIV_LIVE_TOKEN)
         self.ws          = None
         self.balance     = 0.0
         self.preferred_account = (account_id or "").strip()   # optional user choice
@@ -316,7 +317,7 @@ class DerivBroker:
         if not self.token or self.token in ("YOUR_DEMO_TOKEN_HERE", "YOUR_LIVE_TOKEN_HERE", ""):
             raise ConnectionError(
                 "No valid {} token found. Please add your Deriv {} API token "
-                "to the .env file.".format(self.mode.upper(), self.mode.upper()))
+                "on the dashboard (Deriv connection).".format(self.mode.upper(), self.mode.upper()))
 
         log.info("Connecting to Deriv (%s)...", self.mode.upper())
         self._on_candle = on_candle

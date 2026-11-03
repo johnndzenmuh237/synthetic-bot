@@ -82,6 +82,12 @@ def init_db():
             opened_at    TEXT DEFAULT (datetime('now')),
             closed_at    TEXT
         );
+        CREATE TABLE IF NOT EXISTS user_tokens (
+            user_id    INTEGER PRIMARY KEY,
+            demo_token TEXT DEFAULT '',
+            live_token TEXT DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS activity (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id    INTEGER,
@@ -128,6 +134,10 @@ def init_db():
     }.items():
         if col not in bs_cols:
             con.execute("ALTER TABLE bot_state ADD COLUMN {} {}".format(col, coltype))
+    u_cols = {r[1] for r in con.execute("PRAGMA table_info(users)").fetchall()}
+    for col, coltype in {"is_active": "INTEGER DEFAULT 1", "last_login": "TEXT"}.items():
+        if col not in u_cols:
+            con.execute("ALTER TABLE users ADD COLUMN {} {}".format(col, coltype))
     us_cols = {r[1] for r in con.execute("PRAGMA table_info(user_settings)").fetchall()}
     if "timeframe" not in us_cols:
         con.execute("ALTER TABLE user_settings ADD COLUMN timeframe TEXT DEFAULT 'M1'")
@@ -676,8 +686,10 @@ def get_history_symbols(user_id):
 #  every change below is copied to Firebase, and a wiped local file is rebuilt from it.
 # ═════════════════════════════════════════════════════════════
 _TABLE_OF = {"user": "users", "settings": "user_settings", "bot_state": "bot_state",
-             "trade": "trades", "activity": "activity"}
-_PK_OF = {"users": "id", "user_settings": "user_id", "bot_state": "user_id", "trades": "id", "activity": "id"}
+             "trade": "trades", "activity": "activity", "tokens": "user_tokens"}
+_PK_OF = {"users": "id", "user_settings": "user_id", "bot_state": "user_id", "trades": "id",
+          "activity": "id", "user_tokens": "user_id"}
+_KINDS = ("user", "settings", "bot_state", "tokens", "trade", "activity")
 
 
 def _clean(d):
@@ -691,6 +703,8 @@ def _cloud_path(kind, row):
         return "settings/u{}".format(row["user_id"])
     if kind == "bot_state":
         return "bot_state/u{}".format(row["user_id"])
+    if kind == "tokens":
+        return "tokens/u{}".format(row["user_id"])
     if kind == "trade":
         return "trades/u{}/t{}".format(row["user_id"], row["id"])
     return "activity/u{}/a{}".format(row["user_id"], row["id"])
@@ -703,8 +717,8 @@ def _cloud_read(kind, key):
     row = con.execute("SELECT * FROM {} WHERE {}=?".format(table, _PK_OF[table]), (key,)).fetchone()
     con.close()
     if row is None:
-        if kind == "bot_state":                       # a stopped bot: remove its record
-            return "bot_state/u{}".format(key), None
+        if kind in ("bot_state", "tokens"):           # a stopped bot / removed tokens: remove the record
+            return "{}/u{}".format(kind, key), None
         return None, None
     d = dict(row)
     return _cloud_path(kind, d), _clean(d)
@@ -720,8 +734,8 @@ def cloud_ready():
 
 def _cloud_snapshot():
     """Everything in Firebase as {kind: {key: row}} (keys are the local primary keys)."""
-    snap = {"user": {}, "settings": {}, "bot_state": {}, "trade": {}, "activity": {}}
-    for kind, node in (("user", "users"), ("settings", "settings"), ("bot_state", "bot_state")):
+    snap = {k: {} for k in _KINDS}
+    for kind, node in (("user", "users"), ("settings", "settings"), ("bot_state", "bot_state"), ("tokens", "tokens")):
         for _, row in (cloud.get(node) or {}).items():
             if isinstance(row, dict):
                 key = row.get("id") if kind == "user" else row.get("user_id")
@@ -740,7 +754,7 @@ def _cloud_restore_once():
     snap = _cloud_snapshot()
     con = _conn()
     restored = 0
-    for kind in ("user", "settings", "bot_state", "trade", "activity"):
+    for kind in _KINDS:
         table = _TABLE_OF[kind]
         cols = {r[1] for r in con.execute("PRAGMA table_info({})".format(table)).fetchall()}
         for key, row in snap[kind].items():
@@ -751,7 +765,7 @@ def _cloud_restore_once():
     con.commit()
     # Local rows the cloud does not have (or has an older version of) go up now.
     queued = 0
-    for kind in ("user", "settings", "bot_state", "trade", "activity"):
+    for kind in _KINDS:
         table = _TABLE_OF[kind]
         for r in con.execute("SELECT * FROM {}".format(table)).fetchall():
             d = dict(r)
@@ -827,3 +841,86 @@ update_trade_sl     = _mirror(update_trade_sl, lambda a, k, r: [("trade", _first
 close_trade         = _mirror(close_trade, lambda a, k, r: [("trade", _first(a, k, "trade_id"))])
 mark_trade          = _mirror(mark_trade, lambda a, k, r: [("trade", _first(a, k, "trade_id"))])
 log_activity        = _mirror(log_activity, lambda a, k, r: [("activity", r)])
+
+
+# ═════════════════════════════════════════════════════════════
+#  Multi-user: per-user Deriv tokens (stored encrypted), account on/off, admin overview
+# ═════════════════════════════════════════════════════════════
+def get_user_token_blobs(user_id):
+    """{'demo': <encrypted or ''>, 'live': <encrypted or ''>} — still encrypted."""
+    con = _conn()
+    row = con.execute("SELECT demo_token, live_token FROM user_tokens WHERE user_id=?", (user_id,)).fetchone()
+    con.close()
+    return {"demo": (row["demo_token"] if row else "") or "", "live": (row["live_token"] if row else "") or ""}
+
+
+def set_user_token(user_id, mode, encrypted):
+    col = "live_token" if mode == "live" else "demo_token"
+    con = _conn()
+    con.execute("INSERT OR IGNORE INTO user_tokens (user_id) VALUES (?)", (user_id,))
+    con.execute("UPDATE user_tokens SET {}=?, updated_at=datetime('now') WHERE user_id=?".format(col),
+                (encrypted or "", user_id))
+    con.commit()
+    con.close()
+
+
+def set_user_active(user_id, active):
+    con = _conn()
+    con.execute("UPDATE users SET is_active=? WHERE id=?", (1 if active else 0, user_id))
+    con.commit()
+    con.close()
+
+
+def touch_login(user_id):
+    con = _conn()
+    con.execute("UPDATE users SET last_login=datetime('now') WHERE id=?", (user_id,))
+    con.commit()
+    con.close()
+
+
+def user_is_active(user):
+    return bool(user) and (user.get("is_active") is None or int(user.get("is_active")) == 1)
+
+
+def get_first_user_id():
+    con = _conn()
+    row = con.execute("SELECT MIN(id) m FROM users").fetchone()
+    con.close()
+    return row["m"] if row and row["m"] is not None else None
+
+
+def list_users_admin():
+    """Every account with its tokens-connected flags and trading totals (no secrets)."""
+    con = _conn()
+    users = con.execute("SELECT id, username, created_at, last_login, is_active FROM users ORDER BY id").fetchall()
+    tok = {r["user_id"]: r for r in con.execute("SELECT user_id, demo_token, live_token FROM user_tokens").fetchall()}
+    stats = {}
+    for r in con.execute(
+            "SELECT user_id, mode, COUNT(*) n, COALESCE(SUM(CASE WHEN status IN ('WIN','LOSS','EVEN') THEN pnl END),0) pnl, "
+            "SUM(CASE WHEN status IN ('PENDING','UNCONFIRMED','OPEN') THEN 1 ELSE 0 END) open_n "
+            "FROM trades GROUP BY user_id, mode").fetchall():
+        stats.setdefault(r["user_id"], {})[r["mode"]] = r
+    last = {r["user_id"]: r["m"] for r in con.execute(
+        "SELECT user_id, MAX(created_at) m FROM activity GROUP BY user_id").fetchall()}
+    con.close()
+    out = []
+    for u in users:
+        t = tok.get(u["id"])
+        st = stats.get(u["id"], {})
+        def pick(mode, key):
+            return (st.get(mode)[key] if st.get(mode) is not None else 0) or 0
+        out.append({
+            "id": u["id"], "username": u["username"], "created_at": u["created_at"],
+            "last_login": u["last_login"], "is_active": u["is_active"] is None or int(u["is_active"]) == 1,
+            "has_demo_token": bool(t and t["demo_token"]), "has_live_token": bool(t and t["live_token"]),
+            "trades": int(pick("demo", "n")) + int(pick("live", "n")),
+            "pnl_demo": round(float(pick("demo", "pnl")), 2), "pnl_live": round(float(pick("live", "pnl")), 2),
+            "open_trades": int(pick("demo", "open_n")) + int(pick("live", "open_n")),
+            "last_activity": last.get(u["id"]),
+        })
+    return out
+
+
+set_user_token      = _mirror(set_user_token, lambda a, k, r: [("tokens", _first(a, k, "user_id"))])
+set_user_active     = _mirror(set_user_active, lambda a, k, r: [("user", _first(a, k, "user_id"))])
+touch_login         = _mirror(touch_login, lambda a, k, r: [("user", _first(a, k, "user_id"))])

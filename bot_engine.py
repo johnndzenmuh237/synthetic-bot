@@ -82,8 +82,9 @@ class BotSession:
     def __init__(self, user_id, symbol, mode, emit_fn,
                  lot_size=1.0, max_positions=1,
                  strategy=DEFAULT_STRATEGY, loss_policy=DEFAULT_LOSS_POLICY,
-                 close_on_stop=False, account_id="", timeframe=DEFAULT_TIMEFRAME):
+                 close_on_stop=False, account_id="", timeframe=DEFAULT_TIMEFRAME, token=None):
         self.user_id       = user_id
+        self.token         = token          # this user's own Deriv token (None = server token, admin only)
         self.symbol        = symbol
         self.mode          = mode           # "demo" or "live"
         self.emit          = emit_fn
@@ -113,7 +114,7 @@ class BotSession:
         self.running       = False
         self._stop_requested = False
         self._thread       = None
-        self.broker        = DerivBroker(mode, self.account_pref)
+        self.broker        = DerivBroker(mode, self.account_pref, token=self.token)
         self.risk          = None
         self.loop          = None
         self.candles: Dict[str, List[dict]] = defaultdict(list)
@@ -278,7 +279,7 @@ class BotSession:
         self._lock = asyncio.Lock()
         # Fresh broker + candle state on every (re)start: the old socket and
         # half-filled candle lists are dead after a crash.
-        self.broker = DerivBroker(self.mode, self.account_pref)
+        self.broker = DerivBroker(self.mode, self.account_pref, token=self.token)
         self.candles = defaultdict(list)
         self._last_eval_epoch = None
         self._was_disconnected = False

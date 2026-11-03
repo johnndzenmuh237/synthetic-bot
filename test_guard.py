@@ -109,7 +109,10 @@ class T82_ProfitRules(unittest.TestCase):
 
 
 class T83_ProfitEngine(unittest.TestCase):
+    def tearDown(self):
+        bot_engine.PROFIT_RULES = False
     def setUp(self):
+        bot_engine.PROFIT_RULES = True
         self.s = tb.make(lot=10.0, maxpos=3, strategy="REVERSAL_SCALPER")
     def _open(self):
         tb.run(self.s, lambda: tb.trade(self.s, "BUY", 0))
@@ -142,8 +145,33 @@ class T83_ProfitEngine(unittest.TestCase):
         self._tick(t, 5.1)
         self.assertEqual(self._open_count(), 0); self.assertEqual(get_trade(self.s.user_id, t["id"])["status"], "WIN")
     def test_can_be_switched_off(self):
-        old = bot_engine.PROFIT_RULES; bot_engine.PROFIT_RULES = False
-        try:
-            t = self._open(); self._tick(t, 7.0); self.assertEqual(self._open_count(), 1)
-        finally:
-            bot_engine.PROFIT_RULES = old
+        bot_engine.PROFIT_RULES = False
+        t = self._open(); self._tick(t, 7.0); self.assertEqual(self._open_count(), 1)
+    def test_off_by_default(self):
+        import config; self.assertFalse(config.PROFIT_RULES); self.assertFalse(config.LONG_TRADES); self.assertFalse(config.GUARD_ENABLED)
+
+
+class T84_LiveAndDemoBehaveTheSame(unittest.TestCase):
+    """Every rule must act identically on a Demo and a Live account."""
+    def tearDown(self):
+        bot_engine.PROFIT_RULES = False
+    def _run(self, mode):
+        bot_engine.PROFIT_RULES = True
+        s = tb.make(mode=mode, lot=10.0, maxpos=3, strategy="REVERSAL_SCALPER")
+        tb.run(s, lambda: tb.trade(s, "BUY", 0))
+        t = get_open_trades(s.user_id, mode)[-1]
+        def tick(p):
+            async def go():
+                s.broker.contracts[str(t["contract_id"])]["profit"] = p
+                await s._reconcile_trades(); await s._profit_exits()
+            tb.run(s, go)
+        seen = []
+        for p in (1.0, 2.5, 3.4, 3.0, 2.4):
+            tick(p); seen.append(len(get_open_trades(s.user_id, mode)))
+        row = get_trade(s.user_id, t["id"])
+        ok, why = s._entry_allowed(tb.sig("BUY"), 7000)
+        return seen, row["status"], row["pnl"], row["exit_reason"][:13], ok, why[:12]
+    def test_demo_and_live_give_the_same_result(self):
+        demo, live = self._run("demo"), self._run("live")
+        self.assertEqual(demo, live)
+        self.assertEqual(live[:4], ([1, 1, 1, 1, 0], "WIN", 2.4, "Profit locked"))

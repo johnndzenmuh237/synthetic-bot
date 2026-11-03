@@ -123,9 +123,11 @@ class T52_LongTrades(unittest.TestCase):
             r2 = await b.place_trade("R_75", "SELL", 1.0)
             return r1, r2
         g = dict(B._GAPS); B._GAPS.update(proposal=0.01, buy=0.01, sell=0.01, proposal_open_contract=0.01)
+        B.LONG_TRADES = True
         try:
             r1, r2 = asyncio.run(go())
         finally:
+            B.LONG_TRADES = False
             B._GAPS.clear(); B._GAPS.update(g)
         self.assertTrue(r1 and r2)
         self.assertEqual(sent[:3], [(1, "d"), (12, "h"), (4, "h")])        # walks down the ladder once ...
@@ -139,5 +141,9 @@ class T52_LongTrades(unittest.TestCase):
         async def go():
             b = B.DerivBroker("demo"); b.connected = True; b.ws = WS(b)
             return await b.place_trade("R_75", "BUY", 1.0), b
-        r, b = asyncio.run(go())
+        B.LONG_TRADES = True
+        try:
+            r, b = asyncio.run(go())
+        finally:
+            B.LONG_TRADES = False
         self.assertEqual(r, {}); self.assertIn("Market is closed", b.last_error); self.assertEqual(len(b.ws.sent), 1)

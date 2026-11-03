@@ -136,5 +136,25 @@
     ["f-symbol", "f-status", "f-from", "f-to"].forEach(function (id) { $(id).value = ""; });
     $("f-mode").value = ""; page = 1; load();
   };
+
+  // ── Clear history (needs the word CLEAR) ──
+  var modal = $("clear-modal");
+  function closeModal() { modal.hidden = true; $("clear-word").value = ""; $("clear-msg").textContent = ""; $("clear-go").disabled = true; }
+  $("clear-open").onclick = function () { modal.hidden = false; $("clear-word").focus(); };
+  $("clear-cancel").onclick = closeModal;
+  modal.addEventListener("click", function (e) { if (e.target === modal) closeModal(); });
+  $("clear-word").oninput = function () { $("clear-go").disabled = this.value.trim().toUpperCase() !== "CLEAR"; };
+  $("clear-go").onclick = function () {
+    var btn = this; btn.disabled = true; $("clear-msg").textContent = "Deleting...";
+    fetch("/api/history/clear", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: $("clear-scope").value, activity: $("clear-activity").checked, confirm: $("clear-word").value }) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { $("clear-msg").textContent = d.error || "Could not clear."; btn.disabled = false; return; }
+        closeModal(); page = 1; load();
+        var m = "Cleared " + d.trades + " trade(s)" + (d.activity ? " and " + d.activity + " activity line(s)" : "") + ".";
+        setTimeout(function () { $("hist-msg").textContent = m; if (window.showToast) window.showToast(m); }, 500);
+      }).catch(function () { $("clear-msg").textContent = "Network error."; btn.disabled = false; });
+  };
   load();
 })();

@@ -9,9 +9,32 @@
     <div class="hist-head-actions">
       <a class="hist-btn" href="/dashboard">{{ ico('chart') }} Dashboard</a>
       <a class="hist-btn" id="csv-link" href="/history.csv">{{ ico('save') }} Download CSV</a>
+      <button type="button" class="hist-btn hist-danger" id="clear-open">{{ ico('trash') }} Clear history</button>
       <a class="hist-btn" href="/logout">{{ ico('logout') }} Logout</a>
     </div>
   </header>
+
+  <div class="hist-modal" id="clear-modal" hidden>
+    <div class="hist-modal-card" role="dialog" aria-modal="true" aria-labelledby="clear-h">
+      <h3 id="clear-h">Clear history</h3>
+      <p>This permanently deletes your finished trades and, if ticked, your account activity log.
+         Trades that are still open are never touched. <b>It cannot be undone.</b>
+         <a href="/history.csv">Download a CSV copy first</a>.</p>
+      <label>What to clear
+        <select id="clear-scope">
+          <option value="all">Demo + Live trades</option>
+          <option value="demo">Demo trades only</option>
+          <option value="live">Live trades only</option>
+        </select></label>
+      <label class="hist-check"><input type="checkbox" id="clear-activity" checked> Also clear the account activity log</label>
+      <label>Type <b>CLEAR</b> to confirm <input type="text" id="clear-word" autocomplete="off" placeholder="CLEAR"></label>
+      <div class="hist-modal-msg" id="clear-msg"></div>
+      <div class="hist-modal-btns">
+        <button type="button" class="hist-btn" id="clear-cancel">Cancel</button>
+        <button type="button" class="hist-btn hist-danger" id="clear-go" disabled>Delete history</button>
+      </div>
+    </div>
+  </div>
 
   <section class="hist-filters">
     <label>Account
@@ -55,7 +78,7 @@
     <div class="hist-scroll"><table class="hist-table" id="hist-table"></table></div>
     <div class="hist-pager" id="hist-pager"></div>
   </section>
-  <p class="hist-note">Times are shown in your local time. Nothing here is ever deleted.</p>
+  <p class="hist-note">Times are shown in your local time. History is kept permanently unless you press Clear history.</p>
 </div>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='js/history.js') }}"></script>{% endblock %}

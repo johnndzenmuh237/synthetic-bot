@@ -144,6 +144,45 @@ class T40b_Namespace(Base):
         self.assertIsNone(database.get_user("hotel_guest"))                         # never imported
 
 
+class T45_ClearHistory(Base):
+    def _more(self, uid):
+        t3 = database.open_trade(uid, "R_10", "BUY", 1, 5.0, 100.0, 0, 0, contract_id="C3", mode="demo")   # still OPEN
+        t4 = database.open_trade(uid, "R_10", "BUY", 1, 5.0, 100.0, 0, 0, contract_id="C4", mode="demo")
+        database.close_trade(t4, 101.0, 1.0, "WIN", "expiry")
+        self.assertTrue(self.cloud.flush(10))
+        return t3, t4
+    def test_clear_all_removes_local_and_cloud_but_keeps_open_trades(self):
+        uid, t1, t2 = self.seed(); t3, t4 = self._more(uid)
+        other = database.create_user("amy", "H"); amy = database.get_user("amy")["id"]
+        database.log_activity(amy, "login", "x"); at = database.open_trade(amy, "R_10", "BUY", 1, 1.0, 1, 0, 0, contract_id="A1")
+        database.close_trade(at, 1, 1.0, "WIN", "x"); self.assertTrue(self.cloud.flush(10))
+        res = database.clear_history(uid)
+        self.assertEqual((res["trades"], res["kept_open"]), (3, 1))
+        self.assertTrue(self.cloud.flush(10))
+        rows, total, _ = database.get_history(uid)
+        self.assertEqual([r["id"] for r in rows], [t3])                       # only the open trade is left
+        self.assertEqual(database.get_activity(uid)[1], 0)
+        d = self.fb.data
+        self.assertEqual(list(d["trades"]["u%d" % uid]), ["t%d" % t3])         # cloud copy gone too (open one put back)
+        self.assertNotIn("u%d" % uid, d.get("activity", {}))
+        self.assertIn("u%d" % amy, d["trades"]); self.assertIn("u%d" % amy, d["activity"])   # other users untouched
+        self.assertEqual(database.get_user("bob")["password_hash"], "HASH_BOB")               # account untouched
+        self.assertEqual(database.get_history(amy)[1], 1)
+    def test_clear_by_account_type(self):
+        uid, t1, t2 = self.seed()                                 # t1 demo WIN, t2 live LOSS
+        res = database.clear_history(uid, "demo", include_activity=False)
+        self.assertEqual(res["trades"], 1); self.assertTrue(self.cloud.flush(10))
+        self.assertEqual([r["id"] for r in database.get_history(uid)[0]], [t2])
+        self.assertEqual(list(self.fb.data["trades"]["u%d" % uid]), ["t%d" % t2])
+        self.assertEqual(database.get_activity(uid)[1], 1)       # activity kept
+    def test_cleared_history_does_not_come_back_after_a_wipe_and_restore(self):
+        uid, t1, t2 = self.seed()
+        database.clear_history(uid); self.assertTrue(self.cloud.flush(10))
+        fresh_db(); self.cloud.restored = False; database.init_db()
+        self.assertEqual(database.get_history(uid)[1], 0); self.assertEqual(database.get_activity(uid)[1], 0)
+        self.assertEqual(database.get_user("bob")["id"], uid)
+
+
 class T41_Restore(Base):
     def test_wiped_database_is_rebuilt_from_firebase(self):
         uid, t1, t2 = self.seed()

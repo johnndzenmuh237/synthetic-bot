@@ -26,7 +26,7 @@ from database import (init_db, create_user, get_user, get_user_by_id,
                       get_settings, save_settings, set_live_confirmed,
                       save_bot_state, get_bot_state, clear_bot_state, get_all_bot_states,
                       set_entries_hold,
-                      log_activity, get_activity, get_history, get_history_summary,
+                      log_activity, get_activity, get_history, get_history_summary, clear_history,
                       get_history_symbols, cloud_ready, get_user_token_blobs, set_user_token,
                       set_user_active, touch_login, user_is_active, get_first_user_id, list_users_admin)
 import pwa
@@ -946,6 +946,24 @@ def api_history_summary():
     return jsonify({"period": period, "rows": rows,
                     "pnl": round(sum(r["pnl"] for r in rows), 2),
                     "trades": sum(r["trades"] for r in rows)})
+
+
+@app.route("/api/history/clear", methods=["POST"])
+@login_required
+def api_history_clear():
+    """The user wipes their OWN history. Needs the word CLEAR. Open trades are never touched."""
+    uid = session["user_id"]
+    data = request.get_json(silent=True) or {}
+    if str(data.get("confirm", "")).strip().upper() != "CLEAR":
+        return jsonify({"ok": False, "error": "Type CLEAR to confirm."}), 400
+    scope = data.get("scope", "all")
+    if scope not in ("all", "demo", "live"):
+        return jsonify({"ok": False, "error": "Choose all, demo or live."}), 400
+    res = clear_history(uid, None if scope == "all" else scope, include_activity=bool(data.get("activity", True)))
+    log_activity(uid, "history_cleared", "Cleared {} trade(s){} - {}".format(
+        res["trades"], " and the activity log" if res["activity_cleared"] else "",
+        "Demo + Live" if scope == "all" else scope.capitalize()))
+    return jsonify({"ok": True, "trades": res["trades"], "activity": res["activity"], "kept_open": res["kept_open"]})
 
 
 @app.route("/api/activity")

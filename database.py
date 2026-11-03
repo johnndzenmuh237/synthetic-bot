@@ -587,7 +587,7 @@ def get_consecutive_losses(user_id, mode=None):
 
 # ═════════════════════════════════════════════════════════════
 #  Permanent history: activity log, full-history queries
-#  (Nothing in this file ever deletes a trade or an activity row.)
+#  (Nothing deletes history except clear_history(), which the user must confirm.)
 # ═════════════════════════════════════════════════════════════
 def log_activity(user_id, kind, detail=""):
     """Append one line to the user's permanent activity log. Never raises."""
@@ -602,6 +602,33 @@ def log_activity(user_id, kind, detail=""):
     except Exception as e:           # logging an activity must never break a request
         log.warning("activity log failed: %s", e)
         return None
+
+
+def clear_history(user_id, mode=None, include_activity=True):
+    """The user's own "Clear history". Deletes FINISHED trades only (wins, losses, rejected, void...) - a trade that is
+    still open or being confirmed is never touched - and, when include_activity, the account-activity log.
+    mode: None = Demo + Live, or "demo" / "live". Returns what was removed (the cloud copy is removed too)."""
+    con = _conn()
+    try:
+        q = "FROM trades WHERE user_id=? AND status NOT IN " + _in(RECONCILABLE_STATUSES)
+        params = [user_id]
+        if mode in ("demo", "live"):
+            q += " AND mode=?"
+            params.append(mode)
+        ids = [r["id"] for r in con.execute("SELECT id " + q, params).fetchall()]
+        remaining = con.execute("SELECT COUNT(*) n FROM trades WHERE user_id=?", (user_id,)).fetchone()["n"] - len(ids)
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            con.execute("DELETE FROM trades WHERE id IN (%s)" % ",".join("?" * len(chunk)), chunk)
+        acts = 0
+        if include_activity:
+            acts = con.execute("SELECT COUNT(*) n FROM activity WHERE user_id=?", (user_id,)).fetchone()["n"]
+            con.execute("DELETE FROM activity WHERE user_id=?", (user_id,))
+        con.commit()
+    finally:
+        con.close()
+    return {"trades": len(ids), "activity": acts, "kept_open": remaining, "trade_ids": ids,
+            "scope": mode or "all", "activity_cleared": bool(include_activity)}
 
 
 def get_activity(user_id, limit=100, offset=0):
@@ -712,6 +739,8 @@ def _cloud_path(kind, row):
 
 def _cloud_read(kind, key):
     """Current local copy of one row -> (firebase path, value). value None = delete it there."""
+    if kind == "node":                                # remove this whole Firebase path (used by Clear history)
+        return key, None
     table = _TABLE_OF[kind]
     con = _conn()
     row = con.execute("SELECT * FROM {} WHERE {}=?".format(table, _PK_OF[table]), (key,)).fetchone()
@@ -841,6 +870,27 @@ update_trade_sl     = _mirror(update_trade_sl, lambda a, k, r: [("trade", _first
 close_trade         = _mirror(close_trade, lambda a, k, r: [("trade", _first(a, k, "trade_id"))])
 mark_trade          = _mirror(mark_trade, lambda a, k, r: [("trade", _first(a, k, "trade_id"))])
 log_activity        = _mirror(log_activity, lambda a, k, r: [("activity", r)])
+
+
+def _clear_cloud_items(a, k, r):
+    uid = _first(a, k, "user_id")
+    items = []
+    if not r["trade_ids"] and not r["activity"]:
+        return items
+    if r["scope"] == "all":                           # one delete for the whole node, then put back any open trades
+        items.append(("node", "trades/u{}".format(uid)))
+        con = _conn()
+        keep = [x["id"] for x in con.execute("SELECT id FROM trades WHERE user_id=?", (uid,)).fetchall()]
+        con.close()
+        items += [("trade", i) for i in keep]
+    else:
+        items += [("node", "trades/u{}/t{}".format(uid, i)) for i in r["trade_ids"]]
+    if r["activity_cleared"]:
+        items.append(("node", "activity/u{}".format(uid)))
+    return items
+
+
+clear_history       = _mirror(clear_history, _clear_cloud_items)
 
 
 # ═════════════════════════════════════════════════════════════

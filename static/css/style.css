@@ -810,3 +810,13 @@ html,body{
 .install-ios{font-size:11px;color:var(--t2);margin-right:10px}
 .install-auth + .install-ios{text-align:center;margin:8px 0 0}
 .admin-theme .install-link{color:var(--gold);border-color:var(--gold);background:#f59e0b14}
+
+/* connect-your-token banner + install buttons in the top bars */
+.connect-banner{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:12px 16px 0;padding:12px 14px;
+  background:var(--aglow);border:1px solid var(--accent);border-radius:10px;color:var(--t1);font-size:13px;line-height:1.5}
+.connect-banner[hidden]{display:none}
+.connect-banner span{color:var(--t2)}
+.connect-banner .conn-btn{padding:9px 16px;font-weight:700}
+.install-mini{padding:5px 9px;font-size:12px;margin-left:auto;margin-right:8px}
+@media (min-width:769px){.install-mini{display:none}}
+.install-mini + .nav-history{margin-left:0}

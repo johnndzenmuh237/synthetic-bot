@@ -22,6 +22,8 @@
     $("conn-badges").innerHTML =
       '<span class="cb ' + (t.demo.connected ? "on" : "off") + '">Demo</span>' +
       '<span class="cb ' + (t.live.connected ? "on" : "off") + '">Live</span>';
+    var ban = $("connect-banner");
+    if (ban) ban.hidden = !!(t.demo.connected || t.live.connected);
     var box = $("conn-box");
     if (!t.demo.connected && !t.live.connected && box && !box.hasAttribute("data-seen")) { box.open = true; }
     if (box) box.setAttribute("data-seen", "1");
@@ -56,5 +58,14 @@
       });
     };
   }
+  var cb = $("connect-banner-btn");
+  if (cb) cb.onclick = function () {
+    var box = $("conn-box"); if (box) box.open = true;
+    if (window.toggleSidebar && window.innerWidth <= 768) {
+      var sb = document.querySelector(".sidebar");
+      if (sb && !sb.classList.contains("open")) window.toggleSidebar();
+    }
+    if (box) setTimeout(function () { box.scrollIntoView({ behavior: "smooth", block: "center" }); }, 250);
+  };
   wire("demo"); wire("live"); load();
 })();

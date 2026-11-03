@@ -48,6 +48,7 @@
     <span class="logo-icon">{{ ico('zap') }}</span>
     <span>Synthetic<span class="logo-pro">Bot</span></span>
   </div>
+  <button type="button" class="install-link install-mini" data-install>{{ ico('save') }} Install</button>
   <a class="nav-history" href="/history" title="All your trades and activity">{{ ico('list') }} History</a>
   <button class="hamburger" onclick="toggleSidebar()" aria-label="Open menu" title="Menu">{{ ico('menu') }}</button>
 </nav>
@@ -293,6 +294,13 @@
   <!-- ═══ MAIN ════════════════════════════════════════════ -->
   <main class="main">
 
+    <!-- Shown until the user has connected a Deriv token -->
+    <div class="connect-banner" id="connect-banner" hidden>
+      <div><b>Connect your Deriv account to start trading.</b><br>
+        <span>Paste your own Demo and/or Live API token. It is stored encrypted.</span></div>
+      <button type="button" class="conn-btn" id="connect-banner-btn">Connect now</button>
+    </div>
+
     <!-- Top bar -->
     <div class="topbar">
       <div class="topbar-left">
@@ -302,6 +310,7 @@
         <span class="status-text" id="status-text">Stopped</span>
       </div>
       <div class="topbar-right">
+        <button type="button" class="install-link" data-install>{{ ico('save') }} Install app</button>
         <a class="topbar-history" href="/history" title="All your trades and activity">{{ ico('list') }} History</a>
         <div class="running-info" id="running-info">
           <span class="ri-badge" id="ri-lot">Stake: 1.00</span>

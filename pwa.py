@@ -20,6 +20,7 @@ def user_manifest():
         "scope": "/",
         "display": "standalone",
         "orientation": "any",
+        "prefer_related_applications": False,
         "background_color": "#0b0e17",
         "theme_color": "#0b0e17",
         "icons": [

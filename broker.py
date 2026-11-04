@@ -4,12 +4,13 @@ Fixed: proper auth error reporting, balance loading, reconnection
 """
 import asyncio
 import json
+import socket
 from typing import Callable, Dict, Optional
 import aiohttp
 import websockets
 from config import (
     DERIV_WS_URL, DERIV_APP_ID,
-    DERIV_REST_BASE, DERIV_OTP_TTL_SEC,
+    DERIV_REST_BASE, DERIV_OTP_TTL_SEC, DERIV_REST_TIMEOUT, DERIV_FORCE_IPV4, DERIV_CONNECT_TRIES,
     DERIV_DEMO_TOKEN, DERIV_LIVE_TOKEN,
     CANDLE_COUNT, DURATION, DURATION_UNIT, TIMEFRAMES, LONG_TRADES, LONG_TRADE_DURATIONS,
     REQ_GAP_PROPOSAL, REQ_GAP_BUY, REQ_GAP_SELL, REQ_GAP_CONTRACT, REQ_GAP_OTHER, RATE_LIMIT_RETRIES,
@@ -33,6 +34,16 @@ _GAPS = {"proposal": REQ_GAP_PROPOSAL, "buy": REQ_GAP_BUY, "sell": REQ_GAP_SELL,
          "proposal_open_contract": REQ_GAP_CONTRACT}
 
 
+class DerivUnreachable(ConnectionError):
+    """Deriv did not answer in time / could not be reached. Temporary: worth a quick retry."""
+
+
+def _session():
+    """HTTP session for Deriv's REST API (IPv4 only by default: a broken IPv6 route makes requests hang)."""
+    conn = aiohttp.TCPConnector(family=socket.AF_INET) if DERIV_FORCE_IPV4 else None
+    return aiohttp.ClientSession(connector=conn)
+
+
 class OrderStatusUnknown(Exception):
     """The buy request was sent but Deriv's answer never arrived (timeout / dropped
     connection). The order may or may not exist — it must be reconciled, never repeated."""
@@ -46,9 +57,9 @@ async def fetch_accounts(token, app_id=None):
     headers = {"Deriv-App-ID": str(app_id or DERIV_APP_ID),
                "Authorization": "Bearer {}".format(token)}
     try:
-        async with aiohttp.ClientSession() as session:
+        async with _session() as session:
             async with session.get("{}/accounts".format(DERIV_REST_BASE), headers=headers,
-                                   timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                                   timeout=aiohttp.ClientTimeout(total=DERIV_REST_TIMEOUT)) as resp:
                 raw = await resp.text()
                 if resp.status == 401:
                     raise ConnectionError("Invalid or expired API token.")
@@ -59,8 +70,10 @@ async def fetch_accounts(token, app_id=None):
                     body = json.loads(raw)
                 except ValueError:
                     raise ConnectionError("Unexpected response from Deriv /accounts")
+    except asyncio.TimeoutError:
+        raise DerivUnreachable("Deriv did not answer within {:.0f}s (account list). Retrying.".format(DERIV_REST_TIMEOUT))
     except aiohttp.ClientError as e:
-        raise ConnectionError("Could not reach Deriv REST API: {}".format(e))
+        raise DerivUnreachable("Could not reach Deriv REST API: {}".format(e))
     data = body.get("data", [])
     if not isinstance(data, list):
         data = [data]
@@ -240,12 +253,12 @@ class DerivBroker:
         # internal mode uses "live"/"demo" — map between them here only.
         account_type = "real" if self.mode == "live" else "demo"
 
-        async with aiohttp.ClientSession() as session:
+        async with _session() as session:
             # 1. List accounts and pick the one the user asked for
             try:
                 async with session.get(
                         "{}/accounts".format(DERIV_REST_BASE),
-                        headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        headers=headers, timeout=aiohttp.ClientTimeout(total=DERIV_REST_TIMEOUT)) as resp:
                     body = await self._read_response(resp)
                     if resp.status == 401:
                         self.auth_failed = True
@@ -258,8 +271,10 @@ class DerivBroker:
                         raise ConnectionError(
                             "Deriv /accounts error (HTTP {}): {}".format(
                                 resp.status, errs[0].get("message")))
+            except asyncio.TimeoutError:
+                raise DerivUnreachable("Deriv did not answer within {:.0f}s (account list).".format(DERIV_REST_TIMEOUT))
             except aiohttp.ClientError as e:
-                raise ConnectionError("Could not reach Deriv REST API: {}".format(e))
+                raise DerivUnreachable("Could not reach Deriv REST API: {}".format(e))
 
             self.auth_failed = False
             accounts = body.get("data", [])
@@ -299,7 +314,7 @@ class DerivBroker:
             try:
                 async with session.post(
                         "{}/accounts/{}/otp".format(DERIV_REST_BASE, self.account_id),
-                        headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        headers=headers, timeout=aiohttp.ClientTimeout(total=DERIV_REST_TIMEOUT)) as resp:
                     body = await self._read_response(resp)
                     if resp.status != 200:
                         errs = body.get("errors", [{"message": "Unknown error"}])
@@ -307,8 +322,10 @@ class DerivBroker:
                             "Deriv OTP request error (HTTP {}): {}".format(
                                 resp.status, errs[0].get("message")))
                     ws_url = body["data"]["url"]
+            except asyncio.TimeoutError:
+                raise DerivUnreachable("Deriv did not answer within {:.0f}s (connection ticket).".format(DERIV_REST_TIMEOUT))
             except aiohttp.ClientError as e:
-                raise ConnectionError("Could not reach Deriv REST API: {}".format(e))
+                raise DerivUnreachable("Could not reach Deriv REST API: {}".format(e))
 
         return ws_url
 
@@ -326,12 +343,22 @@ class DerivBroker:
         # New-style "pat_..." tokens: fetch a fresh OTP and connect using
         # the URL Deriv gives back. The OTP already embeds authentication,
         # so no `{"authorize": token}` message is sent or needed.
-        url = await self._get_otp_ws_url()
+        url = None
+        for attempt in range(1, max(1, DERIV_CONNECT_TRIES) + 1):         # quick retries for a slow / unreachable Deriv
+            try:
+                url = await self._get_otp_ws_url()
+                break
+            except DerivUnreachable as e:
+                if attempt >= max(1, DERIV_CONNECT_TRIES):
+                    raise
+                log.warning("Deriv slow or unreachable (%s) - trying again (%d/%d)", e, attempt, DERIV_CONNECT_TRIES)
+                await asyncio.sleep(2 * attempt)
 
         try:
+            extra = {"family": socket.AF_INET} if DERIV_FORCE_IPV4 else {}
             self.ws = await websockets.connect(
                 url, ping_interval=20, ping_timeout=20,
-                close_timeout=10)
+                close_timeout=10, open_timeout=20, **extra)
         except Exception as e:
             raise ConnectionError(
                 "Could not open Deriv WebSocket (OTP may have expired — it's only "

@@ -24,6 +24,9 @@ DERIV_LIVE_TOKEN = _env("DERIV_LIVE_TOKEN")
 # tokens, and is kept below only as a legacy fallback reference.
 DERIV_REST_BASE      = "https://api.derivws.com/trading/v1/options"
 DERIV_WS_PUBLIC      = "wss://api.derivws.com/trading/v1/options/ws/public"
+DERIV_REST_TIMEOUT   = float(os.getenv("DERIV_REST_TIMEOUT", 30))      # seconds to wait for Deriv's REST answers
+DERIV_FORCE_IPV4     = os.getenv("DERIV_FORCE_IPV4", "true").lower() == "true"   # avoids hangs on hosts with a broken IPv6 route
+DERIV_CONNECT_TRIES  = int(os.getenv("DERIV_CONNECT_TRIES", 3))        # quick retries inside one connect attempt
 DERIV_OTP_TTL_SEC    = 120  # OTP is single-use and expires fast; fetch fresh on every connect
 
 # Legacy fallback (only valid for old-format tokens, kept for reference)

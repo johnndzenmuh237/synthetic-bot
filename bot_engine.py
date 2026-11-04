@@ -249,7 +249,8 @@ class BotSession:
                 detail = str(e) or "Connection error"
                 log.error("Connection error: %s", detail)
             except Exception as e:
-                detail = str(e) or repr(e) or type(e).__name__
+                detail = str(e) or ("Deriv did not answer in time (timeout)" if isinstance(e, asyncio.TimeoutError)
+                                    else repr(e) or type(e).__name__)
                 log.error("Bot session error: %s", detail, exc_info=True)
             finally:
                 try:
@@ -272,7 +273,7 @@ class BotSession:
                 if self._stop_requested:
                     break
                 time.sleep(1)
-            backoff = min(backoff * 2, 60)
+            backoff = min(backoff * 2, 30)
             self.running = True
 
         self.running = False
@@ -420,7 +421,15 @@ class BotSession:
     async def _load_history(self):
         self._set_state("starting", "Loading market data for {}...".format(self.symbol))
         for tf in [EXECUTION_TF] + ANALYSIS_TF:
-            raw = await self.broker.get_candles(self.symbol, tf)
+            raw = None
+            for attempt in range(3):                       # a slow answer from Deriv is retried, not fatal
+                try:
+                    raw = await self.broker.get_candles(self.symbol, tf)
+                    break
+                except asyncio.TimeoutError:
+                    log.warning("Deriv was slow sending %s %s candles - trying again (%d/3)", self.symbol, tf, attempt + 1)
+                    if attempt == 2:
+                        raise
             if not raw:
                 log.warning("No candles returned for %s %s", self.symbol, tf)
                 continue

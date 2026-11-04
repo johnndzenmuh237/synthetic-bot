@@ -147,3 +147,44 @@ class T52_LongTrades(unittest.TestCase):
         finally:
             B.LONG_TRADES = False
         self.assertEqual(r, {}); self.assertIn("Market is closed", b.last_error); self.assertEqual(len(b.ws.sent), 1)
+
+
+class T53_SlowDeriv(unittest.TestCase):
+    def test_slow_rest_is_retried_quickly_and_reported_clearly(self):
+        calls = []
+        class Boom(B.DerivBroker):
+            async def _get_otp_ws_url(self):
+                calls.append(1)
+                if len(calls) < 3:
+                    raise B.DerivUnreachable("Deriv did not answer within 30s (account list).")
+                return "wss://example.invalid/ws"
+        class WS: pass
+        async def fake_connect(url, **kw):
+            fake_connect.kw = kw; return WS()
+        had = hasattr(B.websockets, "connect"); orig_c = getattr(B.websockets, "connect", None)
+        orig_l, orig_s = B.DerivBroker._listen, asyncio.sleep
+        async def noop(self, cb): return None
+        async def quick(d, *a, **k): return await orig_s(0)
+        B.websockets.connect = fake_connect; B.DerivBroker._listen = noop; asyncio.sleep = quick
+        try:
+            async def go():
+                b = Boom("demo", token="pat_x"); await b.connect(lambda *a: None); return b
+            b = asyncio.run(go())
+        finally:
+            B.DerivBroker._listen, asyncio.sleep = orig_l, orig_s
+            if had: B.websockets.connect = orig_c
+            else: del B.websockets.connect
+        self.assertEqual(len(calls), 3); self.assertTrue(b.connected)                 # 2 slow answers, 3rd works, no long wait
+        self.assertEqual(fake_connect.kw.get("family"), __import__("socket").AF_INET)  # IPv4 only
+    def test_gives_up_after_the_configured_tries_with_a_readable_message(self):
+        class Boom(B.DerivBroker):
+            async def _get_otp_ws_url(self): raise B.DerivUnreachable("Deriv did not answer within 30s (account list).")
+        orig_s = asyncio.sleep
+        async def quick(d, *a, **k): return await orig_s(0)
+        asyncio.sleep = quick
+        try:
+            with self.assertRaises(B.DerivUnreachable) as cm:
+                asyncio.run(Boom("demo", token="pat_x").connect(lambda *a: None))
+        finally:
+            asyncio.sleep = orig_s
+        self.assertIn("did not answer", str(cm.exception))

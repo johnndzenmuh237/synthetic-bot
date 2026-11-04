@@ -310,14 +310,15 @@ function getConfig() {
     loss_policy:   $("loss-policy-select").value,
     close_on_stop: $("close-on-stop").checked,
     account_id:    $("account-select").value || "",
-    timeframe:     $("timeframe-select").value
+    timeframe:     $("timeframe-select").value,
+    trade_time:    $("trade-time-select").value
   };
 }
 
 var CFG_LABELS = { symbol: "pair", mode: "account mode", lot_size: "stake", max_positions: "max positions",
                    strategy: "strategy", loss_policy: "loss policy", close_on_stop: "close on stop",
-                   account_id: "account", timeframe: "timeframe" };
-var CFG_KEYS = ["symbol", "mode", "lot_size", "max_positions", "strategy", "loss_policy", "close_on_stop", "account_id", "timeframe"];
+                   account_id: "account", timeframe: "timeframe", trade_time: "trade time" };
+var CFG_KEYS = ["symbol", "mode", "lot_size", "max_positions", "strategy", "loss_policy", "close_on_stop", "account_id", "timeframe", "trade_time"];
 
 function describe(cfg) {
   if (!cfg) return "—";

@@ -42,7 +42,7 @@ from database import (
     get_recent_trades, get_stats, get_daily_pnl, get_exposure, set_entries_hold,
 )
 from config import (
-    EXECUTION_TF, ANALYSIS_TF, TIMEFRAMES, DURATION, DURATION_UNIT,
+    EXECUTION_TF, ANALYSIS_TF, TIMEFRAMES, DURATION, DURATION_UNIT, DEFAULT_TRADE_TIME, DURATION_CHOICES,
     DEFAULT_STRATEGY, DEFAULT_LOSS_POLICY, ALLOW_HEDGE, MAX_OPEN_TRADES,
     CF_CONFIRM_SEC, CF_BAND_FRAC, CF_PROTECT_PROFIT, CF_ENTRY_RETRY_SEC, CF_MAX_TICK_AGE,
     POSITION_POLL_SEC, DEFAULT_TIMEFRAME, SELL_MIN_GAP_SEC, SELL_RATE_RETRIES,
@@ -59,9 +59,17 @@ SLOW_EVERY_SEC   = 30        # reconcile + balance refresh interval
 UNRESOLVED_GRACE = 120       # seconds before an unmatched order is flagged UNRECONCILED
 
 
-def _duration_seconds():
-    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(DURATION_UNIT, 60)
-    return DURATION * mult
+def parse_trade_time(text):
+    """'15m' / '4h' / '1d' -> (15, 'm'). Unknown text -> the default trade time."""
+    text = str(text or DEFAULT_TRADE_TIME).strip().lower()
+    if len(text) < 2 or not text[:-1].isdigit() or text[-1] not in "smhd":
+        text = DEFAULT_TRADE_TIME
+    return int(text[:-1]), text[-1]
+
+
+def _duration_seconds(text=None):
+    n, unit = parse_trade_time(text)
+    return n * {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit, 60)
 
 
 def _opened_at_ts(opened_at_str):
@@ -85,7 +93,8 @@ class BotSession:
     def __init__(self, user_id, symbol, mode, emit_fn,
                  lot_size=1.0, max_positions=1,
                  strategy=DEFAULT_STRATEGY, loss_policy=DEFAULT_LOSS_POLICY,
-                 close_on_stop=False, account_id="", timeframe=DEFAULT_TIMEFRAME, token=None):
+                 close_on_stop=False, account_id="", timeframe=DEFAULT_TIMEFRAME, token=None,
+                 trade_time=DEFAULT_TRADE_TIME):
         self.user_id       = user_id
         self.token         = token          # this user's own Deriv token (None = server token, admin only)
         self.symbol        = symbol
@@ -99,6 +108,7 @@ class BotSession:
         self.account_pref  = account_id or ""
         self.info          = strategy_info(strategy)
         self.timeframe     = timeframe if timeframe in ("M1", "M5") else "M1"
+        self.trade_time    = trade_time if trade_time in DURATION_CHOICES else DEFAULT_TRADE_TIME   # how long a new trade runs
         # Candle Follow state (all per-bot, per-position)
         self.tracker       = DirectionTracker(CF_CONFIRM_SEC)
         self.pnl_now       = {}      # trade id -> live profit reported by Deriv
@@ -153,7 +163,7 @@ class BotSession:
         return {"symbol": self.symbol, "mode": self.mode, "lot_size": self.lot_size,
                 "max_positions": self.max_positions, "strategy": self.strategy,
                 "loss_policy": self.loss_policy, "close_on_stop": self.close_on_stop,
-                "account_id": self.account_pref, "timeframe": self.timeframe}
+                "account_id": self.account_pref, "timeframe": self.timeframe, "trade_time": self.trade_time}
 
     def status_dict(self):
         """The REAL state of the worker (never claims 'running' unless it is)."""
@@ -215,7 +225,7 @@ class BotSession:
         log.info("Bot stopped | user=%s symbol=%s", self.user_id, self.symbol)
 
     def update_settings(self, lot_size=None, max_positions=None, loss_policy=None, close_on_stop=None,
-                        timeframe=None):
+                        timeframe=None, trade_time=None):
         """Apply validated changes to the RUNNING bot; used for the next order onwards."""
         if lot_size is not None:
             self.lot_size = float(lot_size)
@@ -225,6 +235,9 @@ class BotSession:
             self.loss_policy = loss_policy
         if close_on_stop is not None:
             self.close_on_stop = bool(close_on_stop)
+        if trade_time in DURATION_CHOICES and trade_time != self.trade_time:
+            self.trade_time = trade_time               # used for every NEW trade from now on
+            log.info("Trade time changed to %s (new trades only)", trade_time)
         if timeframe in ("M1", "M5") and timeframe != self.timeframe:
             self.timeframe = timeframe
             self.tracker.reset()               # a new timeframe needs its own confirmation
@@ -590,6 +603,7 @@ class BotSession:
             contract_id="", mode=self.mode, position_num=self._free_slot(),
             trade_group=uuid.uuid4().hex[:12], target_price=0, r_distance=0,
             status="PENDING", account_id=self.broker.account_id, strategy=signal.strategy)
+        self.broker.trade_duration = parse_trade_time(self.trade_time)      # the trade time the user selected
         try:
             contract = await self.broker.place_trade(self.symbol, signal.direction, stake)
         except OrderStatusUnknown as e:
@@ -1082,7 +1096,7 @@ class BotSession:
     async def _reconcile_trades(self):
         """Match every unresolved trade with what Deriv says. Results are recorded
         only when Deriv confirms the contract is finished."""
-        now, dur = time.time(), _duration_seconds()
+        now, dur = time.time(), _duration_seconds(self.trade_time)
         floating, changed = 0.0, False
 
         if await self._resolve_unconfirmed():
@@ -1170,7 +1184,7 @@ class BotSession:
                     log.info("Order #%s reconciled: found Deriv contract %s", t["id"], match["contract_id"])
                     changed = True
             elif (portfolio is not None and age > UNRESOLVED_GRACE) or \
-                 (portfolio is None and age > _duration_seconds() + UNRESOLVED_GRACE):
+                 (portfolio is None and age > _duration_seconds(self.trade_time) + UNRESOLVED_GRACE):
                 mark_trade(t["id"], "UNRECONCILED",
                            "Order not found among Deriv's open contracts — verify in the Deriv back office")
                 log.warning("Order #%s could not be matched with Deriv — flagged UNRECONCILED", t["id"])

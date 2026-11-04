@@ -238,6 +238,13 @@ USE_M5_FILTER = True
 # ── Contract ─────────────────────────────────────────────────
 DURATION      = int(os.getenv("CONTRACT_DURATION", 15))
 DURATION_UNIT = os.getenv("CONTRACT_DURATION_UNIT", "m")
+# Trade time the user can pick on the dashboard ("Trade time"). Deriv decides the real minimum/maximum for each market:
+# if it refuses a length, the bot shows Deriv's own reason and places no trade.
+DURATION_CHOICES = {"1m": "1 minute", "5m": "5 minutes", "15m": "15 minutes", "30m": "30 minutes", "1h": "1 hour",
+                    "2h": "2 hours", "4h": "4 hours", "12h": "12 hours", "1d": "1 day"}
+DEFAULT_TRADE_TIME = "{}{}".format(DURATION, DURATION_UNIT)
+if DEFAULT_TRADE_TIME not in DURATION_CHOICES:
+    DURATION_CHOICES[DEFAULT_TRADE_TIME] = "{} {}".format(DURATION, {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}.get(DURATION_UNIT, DURATION_UNIT))
 
 # ── Web ──────────────────────────────────────────────────────
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")

@@ -182,6 +182,13 @@
         <option value="{{ key }}" {% if settings.timeframe == key %}selected{% endif %}>{{ name }} ({{ key }})</option>
         {% endfor %}
       </select>
+      <div class="section-label sub-label">Trade time (how long each trade runs)</div>
+      <select id="trade-time-select" class="select" onchange="onSettingChanged()" aria-label="Trade time">
+        {% for key, name in trade_times.items() %}
+        <option value="{{ key }}" {% if settings.trade_time == key %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+      <div class="field-hint">Deriv sets the longest time allowed for each market. If it refuses one, the dashboard shows its reason and no trade is placed.</div>
       <select id="loss-policy-select" class="select" onchange="onSettingChanged()" aria-label="Losing trade policy">
         {% for key, name in loss_policies.items() %}
         <option value="{{ key }}" {% if settings.loss_policy == key %}selected{% endif %}>{{ name }}</option>

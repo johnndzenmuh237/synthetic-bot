@@ -106,6 +106,7 @@ class DerivBroker:
         self._closing        = False  # True once disconnect() is called, stops auto-reconnect
         self.last_error      = ""     # human-readable reason the last trade failed
         self._sym_key        = "underlying_symbol"  # new Deriv API name; falls back to "symbol"
+        self.trade_duration  = None   # (number, unit) chosen by the user; None = the server default
 
     def _next_id(self):
         self._req_id += 1
@@ -449,6 +450,17 @@ class DerivBroker:
     async def _proposal(self, symbol, ctype, stake):
         """Long trades: use the longest duration Deriv accepts for this symbol (remembered after the first success).
         A rejection that is not about the duration is raised straight away."""
+        if self.trade_duration:                          # the user picked a trade time: use exactly that
+            n, unit = self.trade_duration
+            try:
+                return await self._proposal_for(symbol, ctype, stake, n, unit)
+            except ConnectionError:
+                raise
+            except Exception as e:
+                if "duration" in str(e).lower():
+                    raise DerivError("Deriv does not accept a {}{} trade time for {}: {}".format(n, unit, symbol, e),
+                                     getattr(e, "code", ""))
+                raise
         if not LONG_TRADES:
             return await self._proposal_for(symbol, ctype, stake, DURATION, DURATION_UNIT)
         cache = self.__dict__.setdefault("_dur_ok", {})

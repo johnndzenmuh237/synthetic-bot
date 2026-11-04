@@ -154,11 +154,35 @@ LOT_TO_USD = 1.0
 
 # ── Strategies (the user picks one on the dashboard) ─────────
 STRATEGIES = {
-    "CANDLE_FOLLOW":    "Candle Follow (live candle direction)",
+    "EMA_TREND":        "EMA 10/20 Trend (follows the trend)",
     "REVERSAL_SCALPER": "Reversal Scalper (EMA5/13 + RSI7)",
     "EMA_CROSS":        "EMA Cross (EMA10/20)",
 }
-DEFAULT_STRATEGY = "CANDLE_FOLLOW"
+DEFAULT_STRATEGY = "EMA_TREND"
+# "Candle Follow" was removed from the dashboard. Anything still saved with it becomes EMA_TREND.
+RETIRED_STRATEGIES = {"CANDLE_FOLLOW": "EMA_TREND"}
+
+# EMA 10/20 Trend — every distance and slope is measured in "average candle ranges", so the same
+# numbers work on any index and on both 1-minute and 5-minute candles. Starting points, not proven values.
+ET_FAST             = int(os.getenv("ET_FAST", 10))
+ET_SLOW             = int(os.getenv("ET_SLOW", 20))
+ET_RANGE_PERIOD     = int(os.getenv("ET_RANGE_PERIOD", 14))        # candles used for the average candle range
+ET_SLOPE_LOOKBACK   = int(os.getenv("ET_SLOPE_LOOKBACK", 3))       # candles over which a slope is measured
+ET_MIN_SEP          = float(os.getenv("ET_MIN_SEP", 0.35))         # EMA10-EMA20 gap needed to enter (x avg range)
+ET_MIN_SLOPE        = float(os.getenv("ET_MIN_SLOPE", 0.04))       # both EMAs must move at least this per candle (x avg range)
+ET_WHIPSAW_LOOKBACK = int(os.getenv("ET_WHIPSAW_LOOKBACK", 12))    # candles checked for repeated crossings
+ET_WHIPSAW_MAX      = int(os.getenv("ET_WHIPSAW_MAX", 2))          # more crossings than this = consolidation
+ET_ENTRY_KEEP       = float(os.getenv("ET_ENTRY_KEEP", 0.80))      # gap must still be >= this share of its recent peak to enter
+ET_CONVERGE_RATIO   = float(os.getenv("ET_CONVERGE_RATIO", 0.65))  # gap below this share of its peak = converging
+ET_CONVERGE_CONFIRM = int(os.getenv("ET_CONVERGE_CONFIRM", 2))     # closed candles in a row before a convergence exit
+ET_PEAK_LOOKBACK    = int(os.getenv("ET_PEAK_LOOKBACK", 12))      # candles used to find the recent peak gap
+ET_COOLDOWN_CANDLES = int(os.getenv("ET_COOLDOWN_CANDLES", 2))     # pause after an exit before the next entry
+
+# Trading session length (dashboard). When it ends: no new trades, open ones are handled, the bot stops.
+SESSION_CHOICES = {"1": "1 hour", "2": "2 hours", "4": "4 hours", "8": "8 hours", "12": "12 hours", "24": "24 hours"}
+DEFAULT_SESSION_HOURS = os.getenv("DEFAULT_SESSION_HOURS", "24")
+if DEFAULT_SESSION_HOURS not in SESSION_CHOICES:
+    DEFAULT_SESSION_HOURS = "24"
 
 # Candle Follow — starting points, NOT proven settings (see candle_follow.py).
 CF_CONFIRM_SEC     = float(os.getenv("CF_CONFIRM_SEC", 5))      # seconds a direction must hold before an entry

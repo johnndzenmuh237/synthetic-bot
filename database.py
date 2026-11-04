@@ -1,7 +1,8 @@
 """database.py — SQLite persistence: users, candles, signals, trades"""
 import sqlite3, os
 from typing import List, Dict
-from config import DB_PATH, DEFAULT_STRATEGY, DEFAULT_TIMEFRAME, DURATION_CHOICES, DEFAULT_TRADE_TIME
+from config import (DB_PATH, DEFAULT_STRATEGY, DEFAULT_TIMEFRAME, DURATION_CHOICES, DEFAULT_TRADE_TIME,
+                    SESSION_CHOICES, DEFAULT_SESSION_HOURS, RETIRED_STRATEGIES)
 from logger import log
 import functools, json, threading, time
 from cloud_store import store as cloud
@@ -61,6 +62,7 @@ def init_db():
             account_id     TEXT DEFAULT '',
             timeframe      TEXT DEFAULT 'M1',
             trade_time     TEXT DEFAULT '',
+            session_hours  TEXT DEFAULT '',
             live_confirmed INTEGER DEFAULT 0,
             updated_at     TEXT DEFAULT (datetime('now'))
         );
@@ -132,6 +134,7 @@ def init_db():
         "account_id":    "TEXT DEFAULT ''",
         "timeframe":     "TEXT DEFAULT 'M1'",
         "trade_time":    "TEXT DEFAULT ''",
+        "session_hours": "TEXT DEFAULT ''",
         "entries_hold":  "INTEGER DEFAULT 0",   # 1 = user pressed "Close All Trades" and chose to hold new entries
     }.items():
         if col not in bs_cols:
@@ -145,6 +148,8 @@ def init_db():
         con.execute("ALTER TABLE user_settings ADD COLUMN timeframe TEXT DEFAULT 'M1'")
     if "trade_time" not in us_cols:
         con.execute("ALTER TABLE user_settings ADD COLUMN trade_time TEXT DEFAULT ''")
+    if "session_hours" not in us_cols:
+        con.execute("ALTER TABLE user_settings ADD COLUMN session_hours TEXT DEFAULT ''")
 
     # One DB row per Deriv contract: duplicate events can never create a duplicate record.
     try:
@@ -219,6 +224,7 @@ DEFAULT_SETTINGS = {
     "account_id":    "",
     "timeframe":     DEFAULT_TIMEFRAME,
     "trade_time":    DEFAULT_TRADE_TIME,
+    "session_hours": DEFAULT_SESSION_HOURS,
 }
 _SETTING_KEYS = tuple(DEFAULT_SETTINGS.keys())
 
@@ -236,6 +242,8 @@ def _row_to_settings(row):
         d["account_id"] = d["account_id"] or ""
         d["timeframe"] = d["timeframe"] if d["timeframe"] in ("M1", "M5") else "M1"
         d["trade_time"] = d["trade_time"] if d["trade_time"] in DURATION_CHOICES else DEFAULT_TRADE_TIME
+        d["session_hours"] = str(d["session_hours"]) if str(d["session_hours"]) in SESSION_CHOICES else DEFAULT_SESSION_HOURS
+        d["strategy"] = RETIRED_STRATEGIES.get(d["strategy"], d["strategy"])
     return d
 
 
@@ -257,17 +265,18 @@ def save_settings(user_id, settings):
     con.execute("""
         INSERT INTO user_settings
             (user_id, symbol, mode, lot_size, max_positions, strategy, loss_policy,
-             close_on_stop, account_id, live_confirmed, timeframe, trade_time, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
+             close_on_stop, account_id, live_confirmed, timeframe, trade_time, session_hours, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
         ON CONFLICT(user_id) DO UPDATE SET
             symbol=excluded.symbol, mode=excluded.mode, lot_size=excluded.lot_size,
             max_positions=excluded.max_positions, strategy=excluded.strategy,
             loss_policy=excluded.loss_policy, close_on_stop=excluded.close_on_stop,
-            account_id=excluded.account_id, timeframe=excluded.timeframe, trade_time=excluded.trade_time,
+            account_id=excluded.account_id, timeframe=excluded.timeframe, trade_time=excluded.trade_time, session_hours=excluded.session_hours,
             updated_at=excluded.updated_at
     """, (user_id, cur["symbol"], cur["mode"], cur["lot_size"], cur["max_positions"],
           cur["strategy"], cur["loss_policy"], 1 if cur["close_on_stop"] else 0,
-          cur["account_id"], 1 if cur.get("live_confirmed") else 0, cur["timeframe"], cur["trade_time"]))
+          cur["account_id"], 1 if cur.get("live_confirmed") else 0, cur["timeframe"], cur["trade_time"],
+          cur["session_hours"]))
     con.commit()
     con.close()
     return get_settings(user_id)
@@ -291,17 +300,19 @@ def save_bot_state(user_id, cfg):
     con = _conn()
     con.execute("""
         INSERT INTO bot_state (user_id, symbol, mode, lot_size, max_positions,
-                               strategy, loss_policy, close_on_stop, account_id, timeframe, trade_time, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
+                               strategy, loss_policy, close_on_stop, account_id, timeframe, trade_time, session_hours, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
         ON CONFLICT(user_id) DO UPDATE SET
             symbol=excluded.symbol, mode=excluded.mode,
             lot_size=excluded.lot_size, max_positions=excluded.max_positions,
             strategy=excluded.strategy, loss_policy=excluded.loss_policy,
             close_on_stop=excluded.close_on_stop, account_id=excluded.account_id,
-            timeframe=excluded.timeframe, trade_time=excluded.trade_time, updated_at=excluded.updated_at
+            timeframe=excluded.timeframe, trade_time=excluded.trade_time, session_hours=excluded.session_hours,
+            updated_at=excluded.updated_at
     """, (user_id, cfg["symbol"], cfg["mode"], cfg["lot_size"], cfg["max_positions"],
           cfg["strategy"], cfg["loss_policy"], 1 if cfg["close_on_stop"] else 0,
-          cfg.get("account_id", ""), cfg.get("timeframe", "M1"), cfg.get("trade_time") or DEFAULT_TRADE_TIME))
+          cfg.get("account_id", ""), cfg.get("timeframe", "M1"), cfg.get("trade_time") or DEFAULT_TRADE_TIME,
+          cfg.get("session_hours") or DEFAULT_SESSION_HOURS))
     con.commit()
     con.close()
 

@@ -39,7 +39,7 @@ from database import (
     open_trade, update_trade, close_trade, mark_trade,
     get_open_trades, get_active_trades, get_reconcilable_trades,
     get_unresolved_orders, contract_exists,
-    get_recent_trades, get_stats, get_daily_pnl, get_exposure, set_entries_hold,
+    get_recent_trades, get_stats, get_daily_pnl, get_exposure, set_entries_hold, clear_bot_state,
 )
 from config import (
     EXECUTION_TF, ANALYSIS_TF, TIMEFRAMES, DURATION, DURATION_UNIT, DEFAULT_TRADE_TIME, DURATION_CHOICES,
@@ -48,8 +48,10 @@ from config import (
     POSITION_POLL_SEC, DEFAULT_TIMEFRAME, SELL_MIN_GAP_SEC, SELL_RATE_RETRIES,
     GUARD_ENABLED, GUARD_MAX_LOSS, GUARD_MAX_LOSS_PCT, GUARD_GIVEBACK, GUARD_GIVEBACK_PCT,
     GUARD_ARM_PROFIT, GUARD_ARM_PCT, GUARD_COOLDOWN_SEC,
+    SESSION_CHOICES, DEFAULT_SESSION_HOURS, ET_COOLDOWN_CANDLES,
     PROFIT_RULES, PROFIT_BASE_STAKE, PROFIT_LOCK_AT, PROFIT_LOCK_FLOOR, PROFIT_TRAIL, PROFIT_TARGET, PROFIT_COOLDOWN_SEC,
 )
+from ema_trend import prepare_trend, exit_decision
 from logger import log
 
 MAX_CANDLES_KEPT = 600
@@ -94,7 +96,7 @@ class BotSession:
                  lot_size=1.0, max_positions=1,
                  strategy=DEFAULT_STRATEGY, loss_policy=DEFAULT_LOSS_POLICY,
                  close_on_stop=False, account_id="", timeframe=DEFAULT_TIMEFRAME, token=None,
-                 trade_time=DEFAULT_TRADE_TIME):
+                 trade_time=DEFAULT_TRADE_TIME, session_hours=DEFAULT_SESSION_HOURS):
         self.user_id       = user_id
         self.token         = token          # this user's own Deriv token (None = server token, admin only)
         self.symbol        = symbol
@@ -109,6 +111,10 @@ class BotSession:
         self.info          = strategy_info(strategy)
         self.timeframe     = timeframe if timeframe in ("M1", "M5") else "M1"
         self.trade_time    = trade_time if trade_time in DURATION_CHOICES else DEFAULT_TRADE_TIME   # how long a new trade runs
+        self.session_hours = str(session_hours) if str(session_hours) in SESSION_CHOICES else DEFAULT_SESSION_HOURS
+        self.session_start = None        # set when the worker is started (kept across reconnects)
+        self._session_over = False
+        self._stop_note    = ""
         # Candle Follow state (all per-bot, per-position)
         self.tracker       = DirectionTracker(CF_CONFIRM_SEC)
         self.pnl_now       = {}      # trade id -> live profit reported by Deriv
@@ -163,7 +169,8 @@ class BotSession:
         return {"symbol": self.symbol, "mode": self.mode, "lot_size": self.lot_size,
                 "max_positions": self.max_positions, "strategy": self.strategy,
                 "loss_policy": self.loss_policy, "close_on_stop": self.close_on_stop,
-                "account_id": self.account_pref, "timeframe": self.timeframe, "trade_time": self.trade_time}
+                "account_id": self.account_pref, "timeframe": self.timeframe, "trade_time": self.trade_time,
+                "session_hours": self.session_hours}
 
     def status_dict(self):
         """The REAL state of the worker (never claims 'running' unless it is)."""
@@ -178,7 +185,8 @@ class BotSession:
              "currency": self.broker.currency, "balance": self.broker.balance,
              "balance_pending": self.balance_pending,
              "paused_reason": self.risk.pause_reason if self.risk else "",
-             "entries_hold": self.entries_hold}
+             "entries_hold": self.entries_hold, "session_ends_at": self._session_end(),
+             "session_over": self._session_over}
         d.update(self.applied_config())
         return d
 
@@ -188,6 +196,10 @@ class BotSession:
             raise RuntimeError("A worker is already running for this bot — refusing to start a duplicate")
         self.running = True
         self._stop_requested = False
+        self._session_over = False
+        self._stop_note = ""
+        if self.session_start is None:
+            self.session_start = time.time()
         self._set_state("starting", "Starting bot...")
         self._thread = threading.Thread(target=self._run_loop, daemon=True,
                                         name="bot-user-{}".format(self.user_id))
@@ -225,7 +237,7 @@ class BotSession:
         log.info("Bot stopped | user=%s symbol=%s", self.user_id, self.symbol)
 
     def update_settings(self, lot_size=None, max_positions=None, loss_policy=None, close_on_stop=None,
-                        timeframe=None, trade_time=None):
+                        timeframe=None, trade_time=None, session_hours=None):
         """Apply validated changes to the RUNNING bot; used for the next order onwards."""
         if lot_size is not None:
             self.lot_size = float(lot_size)
@@ -238,6 +250,9 @@ class BotSession:
         if trade_time in DURATION_CHOICES and trade_time != self.trade_time:
             self.trade_time = trade_time               # used for every NEW trade from now on
             log.info("Trade time changed to %s (new trades only)", trade_time)
+        if session_hours is not None and str(session_hours) in SESSION_CHOICES and str(session_hours) != self.session_hours:
+            self.session_hours = str(session_hours)    # the session end moves with it (counted from the start)
+            log.info("Session length changed to %s h", self.session_hours)
         if timeframe in ("M1", "M5") and timeframe != self.timeframe:
             self.timeframe = timeframe
             self.tracker.reset()               # a new timeframe needs its own confirmation
@@ -290,7 +305,7 @@ class BotSession:
             self.running = True
 
         self.running = False
-        self._set_state("stopped", "Bot stopped")
+        self._set_state("stopped", self._stop_note or "Bot stopped")
 
     async def _main(self):
         self._lock = asyncio.Lock()
@@ -361,8 +376,56 @@ class BotSession:
             self.symbol, self.mode.upper(), self.broker.account_id,
             self.info["title"], self.timeframe, self.lot_size, self.max_positions)
 
+    def _session_end(self):
+        """Epoch second when this trading session ends (None if it has not started)."""
+        if self.session_start is None:
+            return None
+        return self.session_start + float(self.session_hours) * 3600.0
+
+    async def _check_session(self):
+        """When the chosen session length is over: no new trades, handle open positions, stop."""
+        end = self._session_end()
+        if self._session_over or end is None or time.time() < end:
+            return
+        self._session_over = True
+        note = "Trading session of {} ended - the bot has stopped".format(SESSION_CHOICES.get(self.session_hours, self.session_hours + " h"))
+        log.info("Session over for user=%s (%sh) - handling open positions", self.user_id, self.session_hours)
+        self._set_state("stopping", "Trading session ended - handling open trades...")
+        try:
+            async with self._lock:
+                for t in get_open_trades(self.user_id, self.mode):
+                    if t["symbol"] != self.symbol:
+                        continue
+                    if self.close_on_stop:
+                        await self._sell_position(t, "Closed because the trading session ended")
+                        continue
+                    info = await self.broker.get_contract(t["contract_id"])
+                    if not info or info.get("is_sold"):
+                        continue
+                    if _num(info.get("profit")) > 0:
+                        await self._sell_position(t, "Profit taken because the trading session ended")
+                    elif self.loss_policy == "close":
+                        await self._sell_position(t, "Loss closed because the trading session ended (policy: close)")
+                await self._reconcile_trades()
+        except Exception as e:
+            log.error("Session end handling error: %s", e, exc_info=True)
+        self._stop_note = note
+        self._stop_requested = True
+        try:
+            await self.broker.disconnect()
+        except Exception:
+            pass
+        try:
+            clear_bot_state(self.user_id)           # a server restart must not resume an ended session
+        except Exception as e:
+            log.error("Could not clear bot state at session end: %s", e)
+        self._emit("trade_error", {"message": note})
+
     async def _housekeeping(self, last_slow):
         now = time.time()
+        await self._check_session()
+        if self._session_over:
+            return
         if self.broker.auth_failed:
             raise ConnectionError("Deriv rejected the API token (expired or revoked). "
                                   "New orders are disabled until the token is fixed.")
@@ -537,6 +600,8 @@ class BotSession:
         if self._stop_requested or not self.broker.connected or self.broker.auth_failed:
             return
 
+        if self.strategy == "EMA_TREND":
+            await self._trend_exits(m1)
         signal = evaluate(m5, m1, self.symbol, self.strategy, tf=self.timeframe)
         if signal is None:
             return
@@ -571,6 +636,8 @@ class BotSession:
 
     def _entry_allowed(self, signal, closed_epoch):
         """Every gate that must pass before an order may be sent. -> (ok, reason)"""
+        if self._session_over:
+            return False, "The trading session has ended"
         if self._stop_requested or not self.running:
             return False, "Bot is stopping"
         if self.entries_hold:
@@ -589,6 +656,10 @@ class BotSession:
         if self.risk.positions_available() < 1:
             return False, "Position limit reached ({}/{})".format(
                 self.risk.positions_open(), self.max_positions)
+        if self.strategy == "EMA_TREND":
+            for t in get_active_trades(self.user_id, self.mode):       # one position per trend: never stack duplicates
+                if t["symbol"] == self.symbol and t["direction"] == signal.direction:
+                    return False, "A {} position from this trend is already open".format(signal.direction)
         if not ALLOW_HEDGE:
             for t in get_active_trades(self.user_id, self.mode):
                 if t["symbol"] == self.symbol and t["direction"] != signal.direction:
@@ -640,6 +711,31 @@ class BotSession:
         return True
 
     # ── Reversal exits ───────────────────────────────────────
+    async def _trend_exits(self, df):
+        """EMA 10/20 Trend: watch the averages on every closed candle. Close a trade when they cross
+        against it or keep coming together (profit protection); a trade is never held against a
+        confirmed opposite trend, whatever the loss policy says."""
+        d = prepare_trend(df)
+        closed_any = False
+        for t in get_open_trades(self.user_id, self.mode):
+            if t["symbol"] != self.symbol or t.get("status") not in (None, "OPEN"):
+                continue
+            reason = exit_decision(d, t["direction"])
+            if not reason:
+                continue
+            info = await self.broker.get_contract(t["contract_id"])
+            if not info or info.get("is_sold"):
+                continue                                   # reconcile will settle it
+            log.info("Trend exit for trade #%s (%s): %s (profit %.2f)", t["id"], t["direction"], reason, _num(info.get("profit")))
+            if await self._sell_position(t, reason):
+                closed_any = True
+        if closed_any:
+            self._entry_block_until = max(self._entry_block_until,
+                                          time.time() + ET_COOLDOWN_CANDLES * TIMEFRAMES.get(self.timeframe, 60))
+            await self._refresh_balance()
+            self._emit_trade_update()
+            self._emit_positions()
+
     async def _reversal_exits(self, signal):
         for t in get_open_trades(self.user_id, self.mode):
             if t["symbol"] != self.symbol or t["direction"] == signal.direction:

@@ -8,7 +8,7 @@ sys.path.insert(0, ROOT)
 _tmp = tempfile.mkdtemp()
 os.environ.update(DB_PATH=os.path.join(_tmp, "t.db"), LOG_FILE=os.path.join(_tmp, "t.log"),
                   DERIV_DEMO_TOKEN="pat_demo_secret_token_value_123456", DERIV_LIVE_TOKEN="pat_live_secret_token_value_654321",
-                  SECRET_KEY="test-secret", ALLOW_REGISTRATION="true")
+                  SECRET_KEY="test-secret", ALLOW_REGISTRATION="true", ADMIN_USERNAMES="alice,boss", ADMIN_PATH="/ctl-test")
 
 # Stub packages that are only needed for real network / socket use.
 for name in ("aiohttp", "websockets"):
@@ -37,8 +37,8 @@ class FakeBroker:
     """Stands in for DerivBroker. Behaviour is controlled per test."""
     placed = []
     seq = 0
-    def __init__(self, mode="demo", account_id=""):
-        self.mode = mode; self.balance = 1000.0; self.currency = "USD"; self.account_id = "ACC1"
+    def __init__(self, mode="demo", account_id="", token=None):
+        self.token = token; self.mode = mode; self.balance = 1000.0; self.currency = "USD"; self.account_id = "ACC1"
         self.account_type = "real" if mode == "live" else "demo"
         self.connected = True; self.auth_failed = False; self.balance_ok = True; self.last_error = ""
         self.contracts = {}; self.mode_behavior = "ok"; self.portfolio = []
@@ -71,6 +71,7 @@ def make(mode="demo", lot=1.0, maxpos=1, **kw):
     _uid[0] += 1
     FakeBroker.placed = []
     events = []
+    kw.setdefault("strategy", "REVERSAL_SCALPER")      # generic engine tests: a strategy that allows several same-direction trades
     s = bot_engine.BotSession(_uid[0], "R_50", mode, lambda e, p: events.append((e, p)), lot, maxpos, **kw)
     s.events = events
     s.broker = FakeBroker(mode)
@@ -243,8 +244,12 @@ class T05_Restart(unittest.TestCase):
         class Dummy:
             alive = False; _stop_requested = False
             def start(self_): started.append(1); self_.alive = True
+        _orig_make = self.app._make_session; self.addCleanup(setattr, self.app, "_make_session", _orig_make)
+        self.addCleanup(self.app.active_sessions.clear)
         self.app._make_session = lambda uid, cfg: Dummy()
-        uid = database.create_user("restart_user", "x")
+        database.create_user("restart_user", "x"); uid = database.get_user("restart_user")["id"]
+        import token_vault
+        database.set_user_token(uid, "demo", token_vault.encrypt("pat_restart_user_token_123"))   # a user needs their own token
         cfg = dict(database.DEFAULT_SETTINGS); cfg["mode"] = "demo"
         database.save_bot_state(uid, cfg)
         self.app._supervise_once(); self.app._supervise_once()
@@ -280,7 +285,7 @@ class T06_Stop(unittest.TestCase):
 class T07_Accounts(unittest.TestCase):
     def test_wrong_account_type_blocks_trading(self):
         class Wrong(FakeBroker):
-            def __init__(self, mode="demo", account_id=""):
+            def __init__(self, mode="demo", account_id="", token=None):
                 FakeBroker.__init__(self, mode, account_id); self.account_type = "demo"
         s = make("live"); old = bot_engine.DerivBroker; bot_engine.DerivBroker = Wrong
         try:

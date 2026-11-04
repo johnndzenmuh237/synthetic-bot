@@ -24,6 +24,7 @@ from typing import Optional
 
 from indicators import compute_emas, compute_rsi
 from config import (
+    ET_FAST, ET_SLOW, ET_CONVERGE_CONFIRM,
     REV_FAST_EMA, REV_SLOW_EMA, REV_RSI_PERIOD, REV_RSI_LEVEL, REV_USE_M5_FILTER,
     MAX_SIGNAL_AGE_SEC, EMA_TREND_FAST, EMA_TREND_SLOW, USE_M5_FILTER,
     DAILY_RESET_START_UTC, DAILY_RESET_END_UTC, DAILY_RESET_PAUSE, TIMEFRAMES, STRATEGIES, CF_CONFIRM_SEC,
@@ -53,6 +54,15 @@ def strategy_info(name):
                           "Entry only after the direction holds {:g}s".format(CF_CONFIRM_SEC),
                           "Exit immediately when the candle turns against the trade",
                           "Opposite entry only after its own confirmation"]}
+    if name == "EMA_TREND":
+        return {"name": name, "title": STRATEGIES.get(name, name),
+                "fast": ET_FAST, "slow": ET_SLOW, "rsi": None,
+                "labels": {"a": "EMA{}".format(ET_FAST), "b": "EMA{}".format(ET_SLOW), "c": "Close"},
+                "rules": ["Trades the trend on closed 1-minute candles - a trend already running is traded too",
+                          "Enter only when EMA{} and EMA{} are apart and both point the same way".format(ET_FAST, ET_SLOW),
+                          "No trades while the averages are flat, tangled or crossing back and forth",
+                          "Exit when the averages cross back or keep coming together for {} candles".format(ET_CONVERGE_CONFIRM),
+                          "Opposite trade only after the new direction is confirmed"]}
     if name == "EMA_CROSS":
         return {"name": name, "title": STRATEGIES.get(name, name),
                 "fast": EMA_TREND_FAST, "slow": EMA_TREND_SLOW, "rsi": None,
@@ -173,6 +183,24 @@ def _evaluate_cross(m5_df, m1_df, symbol, tf="M1"):
                   float(last["ema_slow"]), reason, "EMA_CROSS", None)
 
 
+# ── EMA 10/20 trend ───────────────────────────────────────────
+def _evaluate_trend(m5_df, m1_df, symbol, tf="M1"):
+    """A signal whenever a clear, healthy trend exists on the closed candles of the selected
+    timeframe — whether the crossover just happened or happened long before the bot started."""
+    from ema_trend import prepare_trend, trend_state, MIN_ROWS
+    if m1_df is None or len(m1_df) < MIN_ROWS:
+        return None
+    d = prepare_trend(m1_df)
+    state, why = trend_state(d)
+    if state == "NONE":
+        return None
+    last = d.iloc[-1]
+    reason = "{} | {}".format(tf, why)
+    log.info("SIGNAL %s | %s | Close=%.5f | %s", state, symbol, float(last["close"]), reason)
+    return Signal(state, symbol, float(last["close"]), float(last["ema_fast"]),
+                  float(last["ema_slow"]), reason, "EMA_TREND", None)
+
+
 def evaluate(m5_df, m1_df, symbol, strategy="REVERSAL_SCALPER", now=None, tf="M1") -> Optional[Signal]:
     """Return a Signal for the last closed M1 candle, or None.
     Stale data and the daily-reset window never produce a signal."""
@@ -183,6 +211,8 @@ def evaluate(m5_df, m1_df, symbol, strategy="REVERSAL_SCALPER", now=None, tf="M1
     if not candle_is_fresh(m1_df, now, gran=TIMEFRAMES.get(tf, 60)):
         log.warning("Market data is stale — no signal evaluated")
         return None
+    if strategy == "EMA_TREND":
+        return _evaluate_trend(m5_df, m1_df, symbol, tf)
     if strategy == "EMA_CROSS":
         return _evaluate_cross(m5_df, m1_df, symbol, tf)
     return _evaluate_reversal(m5_df, m1_df, symbol, tf)

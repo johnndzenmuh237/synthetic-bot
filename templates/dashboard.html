@@ -189,6 +189,13 @@
         {% endfor %}
       </select>
       <div class="field-hint">Deriv sets the longest time allowed for each market. If it refuses one, the dashboard shows its reason and no trade is placed.</div>
+      <div class="section-label sub-label">Trading duration (how long the bot keeps trading)</div>
+      <select id="session-hours-select" class="select" onchange="onSettingChanged()" aria-label="Trading duration">
+        {% for key, name in session_choices.items() %}
+        <option value="{{ key }}" {% if settings.session_hours == key %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+      <div class="field-hint">When this time is over the bot stops opening trades, handles the open ones by your rules, and stops. Start it again for a new session.</div>
       <select id="loss-policy-select" class="select" onchange="onSettingChanged()" aria-label="Losing trade policy">
         {% for key, name in loss_policies.items() %}
         <option value="{{ key }}" {% if settings.loss_policy == key %}selected{% endif %}>{{ name }}</option>

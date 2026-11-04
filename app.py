@@ -37,6 +37,7 @@ from broker import fetch_accounts
 from config import (SECRET_KEY, SECRET_KEY_IS_DEFAULT, FLASK_PORT, SYMBOLS, MIN_STAKE, MAX_STAKE,
                     MAX_OPEN_TRADES, ALLOW_REGISTRATION, STRATEGIES, LOSS_POLICIES,
                     DERIV_DEMO_TOKEN, DERIV_LIVE_TOKEN, TIMEFRAME_CHOICES, SESSION_DAYS, DURATION_CHOICES, DEFAULT_TRADE_TIME,
+                    SESSION_CHOICES, DEFAULT_SESSION_HOURS, RETIRED_STRATEGIES,
                     ADMIN_USERNAMES, MAX_CONCURRENT_BOTS, ADMIN_PATH, ADMIN_PATH_IS_DEFAULT,
                     ADMIN_SESSION_HOURS, ADMIN_LOGIN_MAX_FAILS, ADMIN_LOGIN_LOCK_SEC)
 from logger import log
@@ -59,7 +60,7 @@ socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
 active_sessions = {}
 _workers_lock = threading.RLock()
 
-APPLIED_LIVE_KEYS    = ("lot_size", "max_positions", "loss_policy", "close_on_stop", "timeframe", "trade_time")  # can change while running
+APPLIED_LIVE_KEYS    = ("lot_size", "max_positions", "loss_policy", "close_on_stop", "timeframe", "trade_time", "session_hours")  # can change while running
 APPLIED_RESTART_KEYS = ("symbol", "mode", "strategy", "account_id")                  # need Stop -> Start
 
 
@@ -97,6 +98,7 @@ def validate_config(data, base):
                 return None, "Max positions must be between 1 and {}".format(MAX_OPEN_TRADES)
             cfg["max_positions"] = v
         if "strategy" in data:
+            data = dict(data, strategy=RETIRED_STRATEGIES.get(data["strategy"], data["strategy"]))
             if data["strategy"] not in STRATEGIES:
                 return None, "Unknown strategy"
             cfg["strategy"] = data["strategy"]
@@ -117,6 +119,10 @@ def validate_config(data, base):
             if data["trade_time"] not in DURATION_CHOICES:
                 return None, "Unknown trade time"
             cfg["trade_time"] = data["trade_time"]
+        if "session_hours" in data:
+            if str(data["session_hours"]) not in SESSION_CHOICES:
+                return None, "Unknown trading duration"
+            cfg["session_hours"] = str(data["session_hours"])
         if "account_id" in data:
             v = str(data["account_id"] or "").strip()
             if len(v) > 64 or not all(ch.isalnum() or ch in "-_" for ch in v):
@@ -177,6 +183,7 @@ def _make_session(uid, cfg):
         strategy=cfg["strategy"], loss_policy=cfg["loss_policy"],
         close_on_stop=cfg["close_on_stop"], account_id=cfg.get("account_id", ""),
         timeframe=cfg.get("timeframe", "M1"), trade_time=cfg.get("trade_time") or DEFAULT_TRADE_TIME,
+        session_hours=cfg.get("session_hours") or DEFAULT_SESSION_HOURS,
         token=_user_token(uid, cfg["mode"]))
 
 
@@ -218,6 +225,8 @@ def _supervise_once():
             cfg = {k: state[k] for k in ("symbol", "mode", "lot_size", "max_positions",
                                          "strategy", "loss_policy", "close_on_stop", "account_id", "timeframe")}
             cfg["trade_time"] = state.get("trade_time") or DEFAULT_TRADE_TIME
+            cfg["session_hours"] = state.get("session_hours") or DEFAULT_SESSION_HOURS
+            cfg["strategy"] = RETIRED_STRATEGIES.get(cfg["strategy"], cfg["strategy"])
             new = _make_session(uid, cfg)
             new.entries_hold = bool(state.get("entries_hold"))
             active_sessions[uid] = new
@@ -361,7 +370,7 @@ def dashboard():
                            strategies=STRATEGIES,
                            loss_policies=LOSS_POLICIES,
                            timeframes=TIMEFRAME_CHOICES,
-                           trade_times=DURATION_CHOICES,
+                           trade_times=DURATION_CHOICES, session_choices=SESSION_CHOICES,
                            min_stake=MIN_STAKE,
                            max_stake=MAX_STAKE,
                            max_positions_limit=MAX_OPEN_TRADES)
@@ -520,7 +529,8 @@ def api_update_bot():
 
     sess.update_settings(lot_size=cfg["lot_size"], max_positions=cfg["max_positions"],
                          loss_policy=cfg["loss_policy"], close_on_stop=cfg["close_on_stop"],
-                         timeframe=cfg["timeframe"], trade_time=cfg.get("trade_time"))
+                         timeframe=cfg["timeframe"], trade_time=cfg.get("trade_time"),
+                         session_hours=cfg.get("session_hours"))
     save_bot_state(uid, sess.applied_config())
     save_settings(uid, sess.applied_config())
     log_activity(uid, "bot_update", _cfg_text(sess.applied_config()))
@@ -645,7 +655,7 @@ def api_trades():
 def _cfg_text(cfg):
     return "{} · {} · {} · {} · stake {} · max {} trades".format(
         cfg.get("symbol"), cfg.get("mode"), cfg.get("strategy"), cfg.get("timeframe"),
-        cfg.get("lot_size"), cfg.get("max_positions")) + " · trade time {}".format(cfg.get("trade_time") or DEFAULT_TRADE_TIME)
+        cfg.get("lot_size"), cfg.get("max_positions")) + " · trade time {}".format(cfg.get("trade_time") or DEFAULT_TRADE_TIME) + " · session {} h".format(cfg.get("session_hours") or DEFAULT_SESSION_HOURS)
 
 
 # ── Each user's own Deriv tokens ─────────────────────────────

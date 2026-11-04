@@ -92,7 +92,7 @@ class T30_AllStrategies(unittest.TestCase):
         c.post("/login", data={"username": "picker", "password": "password123"})
         import token_vault; database.set_user_token(database.get_user("picker")["id"], "demo", token_vault.encrypt("pat_test_token_1234"))   # connected users see the dashboard
         page = c.get("/dashboard").get_data(as_text=True)
-        for key in ("CANDLE_FOLLOW", "REVERSAL_SCALPER", "EMA_CROSS"):
+        for key in ("EMA_TREND", "REVERSAL_SCALPER", "EMA_CROSS"):
             self.assertIn('value="{}"'.format(key), page)
             r = c.post("/api/settings", json={"strategy": key, "timeframe": "M5"})
             self.assertTrue(r.get_json()["ok"], key)

@@ -712,9 +712,12 @@ class BotSession:
 
     # ── Reversal exits ───────────────────────────────────────
     async def _trend_exits(self, df):
-        """EMA 10/20 Trend: watch the averages on every closed candle. Close a trade when they cross
-        against it or keep coming together (profit protection); a trade is never held against a
-        confirmed opposite trend, whatever the loss policy says."""
+        """EMA 10/20 Trend exits, checked on every closed candle.
+        * averages coming together  -> PROFIT PROTECTION only: a trade that is in profit is closed to bank it.
+          A trade that is not in profit is never closed just because the averages converged.
+        * averages crossed against the trade -> a profitable trade is closed; a losing trade follows the
+          'Losing trade policy' on the dashboard (hold = let it run to its chosen trade time, close = close it).
+        Nothing is sold at a loss by this strategy unless the user chose the 'close' policy."""
         d = prepare_trend(df)
         closed_any = False
         for t in get_open_trades(self.user_id, self.mode):
@@ -726,7 +729,19 @@ class BotSession:
             info = await self.broker.get_contract(t["contract_id"])
             if not info or info.get("is_sold"):
                 continue                                   # reconcile will settle it
-            log.info("Trend exit for trade #%s (%s): %s (profit %.2f)", t["id"], t["direction"], reason, _num(info.get("profit")))
+            profit = _num(info.get("profit"))
+            converging = "converging" in reason
+            if profit > 0:
+                pass                                       # bank the profit
+            elif converging:
+                log.info("Trade #%s: averages converging but the trade is not in profit (%.2f) - keeping it", t["id"], profit)
+                continue
+            elif self.loss_policy == "close":
+                reason += " (loss policy: close)"
+            else:
+                log.info("Trade #%s: trend turned against it while losing (%.2f) - holding to its trade time (policy: hold)", t["id"], profit)
+                continue
+            log.info("Trend exit for trade #%s (%s): %s (profit %.2f)", t["id"], t["direction"], reason, profit)
             if await self._sell_position(t, reason):
                 closed_any = True
         if closed_any:

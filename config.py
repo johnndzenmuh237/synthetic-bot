@@ -67,7 +67,7 @@ TIMEFRAMES = {
     "H1":  3600,
     "H4":  14400,
 }
-ANALYSIS_TF  = ["M5"]     # trend timeframe
+ANALYSIS_TF  = ["M5", "M15"]   # candles kept for the chart tabs / context (M15 can also be the followed timeframe)
 EXECUTION_TF = "M1"       # entry/candle-close timeframe
 CANDLE_COUNT = 300
 
@@ -231,7 +231,8 @@ PROFIT_TRAIL       = float(os.getenv("PROFIT_TRAIL", 1.00))        # once locked
 PROFIT_TARGET      = float(os.getenv("PROFIT_TARGET", 5.00))       # take the profit and exit here
 PROFIT_COOLDOWN_SEC = float(os.getenv("PROFIT_COOLDOWN_SEC", 60))  # wait this long for the next opportunity after an exit
 POSITION_POLL_SEC  = float(os.getenv("POSITION_POLL_SEC", 3))   # how often open positions are re-priced
-TIMEFRAME_CHOICES  = {"M1": "1 minute", "M5": "5 minutes"}
+TIMEFRAME_CHOICES  = {"M1": "1 minute", "M5": "5 minutes", "M15": "15 minutes"}
+SELECTABLE_TF      = tuple(TIMEFRAME_CHOICES)          # timeframes the bot can follow
 DEFAULT_TIMEFRAME  = "M1"
 
 # Reversal Scalper — starting points for testing (NOT verified settings of any

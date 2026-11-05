@@ -42,7 +42,7 @@ from database import (
     get_recent_trades, get_stats, get_daily_pnl, get_exposure, set_entries_hold, clear_bot_state,
 )
 from config import (
-    EXECUTION_TF, ANALYSIS_TF, TIMEFRAMES, DURATION, DURATION_UNIT, DEFAULT_TRADE_TIME, DURATION_CHOICES,
+    EXECUTION_TF, ANALYSIS_TF, TIMEFRAMES, TIMEFRAME_CHOICES, DURATION, DURATION_UNIT, DEFAULT_TRADE_TIME, DURATION_CHOICES,
     DEFAULT_STRATEGY, DEFAULT_LOSS_POLICY, ALLOW_HEDGE, MAX_OPEN_TRADES,
     CF_CONFIRM_SEC, CF_BAND_FRAC, CF_PROTECT_PROFIT, CF_ENTRY_RETRY_SEC, CF_MAX_TICK_AGE,
     POSITION_POLL_SEC, DEFAULT_TIMEFRAME, SELL_MIN_GAP_SEC, SELL_RATE_RETRIES,
@@ -109,7 +109,7 @@ class BotSession:
         self.close_on_stop = bool(close_on_stop)
         self.account_pref  = account_id or ""
         self.info          = strategy_info(strategy)
-        self.timeframe     = timeframe if timeframe in ("M1", "M5") else "M1"
+        self.timeframe     = timeframe if timeframe in TIMEFRAME_CHOICES else "M1"
         self.trade_time    = trade_time if trade_time in DURATION_CHOICES else DEFAULT_TRADE_TIME   # how long a new trade runs
         self.session_hours = str(session_hours) if str(session_hours) in SESSION_CHOICES else DEFAULT_SESSION_HOURS
         self.session_start = None        # set when the worker is started (kept across reconnects)
@@ -253,7 +253,7 @@ class BotSession:
         if session_hours is not None and str(session_hours) in SESSION_CHOICES and str(session_hours) != self.session_hours:
             self.session_hours = str(session_hours)    # the session end moves with it (counted from the start)
             log.info("Session length changed to %s h", self.session_hours)
-        if timeframe in ("M1", "M5") and timeframe != self.timeframe:
+        if timeframe in TIMEFRAME_CHOICES and timeframe != self.timeframe:
             self.timeframe = timeframe
             self.tracker.reset()               # a new timeframe needs its own confirmation
             self._last_eval_epoch = None       # evaluate the new timeframe's last closed candle afresh
@@ -1370,7 +1370,7 @@ class BotSession:
 
     def _rules(self):
         """Rule lines for the strategy card, worded for the selected timeframe."""
-        word = "5-minute" if self.timeframe == "M5" else "1-minute"
+        word = {"M5": "5-minute", "M15": "15-minute"}.get(self.timeframe, "1-minute")
         return [r.replace("1-minute", word) for r in self.info["rules"]]
 
     def _emit_analysis(self, m5_df, m1_df):

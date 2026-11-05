@@ -2,7 +2,7 @@
 import sqlite3, os
 from typing import List, Dict
 from config import (DB_PATH, DEFAULT_STRATEGY, DEFAULT_TIMEFRAME, DURATION_CHOICES, DEFAULT_TRADE_TIME,
-                    SESSION_CHOICES, DEFAULT_SESSION_HOURS, RETIRED_STRATEGIES)
+                    SESSION_CHOICES, DEFAULT_SESSION_HOURS, RETIRED_STRATEGIES, TIMEFRAME_CHOICES)
 from logger import log
 import functools, json, threading, time
 from cloud_store import store as cloud
@@ -240,7 +240,7 @@ def _row_to_settings(row):
         d["lot_size"] = float(d["lot_size"])
         d["max_positions"] = int(d["max_positions"])
         d["account_id"] = d["account_id"] or ""
-        d["timeframe"] = d["timeframe"] if d["timeframe"] in ("M1", "M5") else "M1"
+        d["timeframe"] = d["timeframe"] if d["timeframe"] in TIMEFRAME_CHOICES else "M1"
         d["trade_time"] = d["trade_time"] if d["trade_time"] in DURATION_CHOICES else DEFAULT_TRADE_TIME
         d["session_hours"] = str(d["session_hours"]) if str(d["session_hours"]) in SESSION_CHOICES else DEFAULT_SESSION_HOURS
         d["strategy"] = RETIRED_STRATEGIES.get(d["strategy"], d["strategy"])

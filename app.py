@@ -113,7 +113,7 @@ def validate_config(data, base):
             cfg["close_on_stop"] = bool(v)
         if "timeframe" in data:
             if data["timeframe"] not in TIMEFRAME_CHOICES:
-                return None, "Timeframe must be 1 minute (M1) or 5 minutes (M5)"
+                return None, "Timeframe must be 1 minute (M1), 5 minutes (M5) or 15 minutes (M15)"
             cfg["timeframe"] = data["timeframe"]
         if "trade_time" in data:
             if data["trade_time"] not in DURATION_CHOICES:

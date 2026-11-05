@@ -502,7 +502,7 @@ function computeEma(candles, period) {
 }
 
 function showChart(tf) {
-  ["M1", "M5"].forEach(function(t) {
+  ["M1", "M5", "M15"].forEach(function(t) {
     var pane = $("chart-" + t);
     if (pane) pane.classList.toggle("active", t === tf);
   });
@@ -519,7 +519,7 @@ function switchChart(tf) {
 function resetCharts() {
   Object.keys(state.charts).forEach(function(tf) { try { state.charts[tf].chart.remove(); } catch (e) {} });
   state.charts = {}; state.candles = {};
-  ["M1", "M5"].forEach(function(t) { var p = $("chart-" + t); if (p) p.innerHTML = ""; });
+  ["M1", "M5", "M15"].forEach(function(t) { var p = $("chart-" + t); if (p) p.innerHTML = ""; });
   var ph = $("chart-placeholder");
   if (ph) ph.style.display = "flex";
 }
@@ -552,7 +552,7 @@ function renderAnalysis(d) {
       : ic("minus") + (follow ? " Inside the neutral band" : " No clear direction");
   });
   if (d.strategy) $("strategy-title").textContent = d.strategy;
-  var tfName = d.timeframe === "M5" ? "M5" : "M1";
+  var tfName = (d.timeframe === "M5" || d.timeframe === "M15") ? d.timeframe : "M1";
   $("m1-title").textContent = tfName + (d.kind === "follow" ? " Candle" : " Signal");
   if (d.rules) {
     var box = $("exec-rules"), status = $("exec-status");
@@ -785,7 +785,7 @@ $("live-modal-check").addEventListener("change", function() { $("live-modal-ok")
   setLot(state.lotSize);
   setPositions(state.maxPositions);
   syncTimeframeEnabled();
-  if (state.timeframe === "M5") switchChart("M5");
+  if (state.timeframe === "M5" || state.timeframe === "M15") switchChart(state.timeframe);
   $("mode-warning").style.display = state.mode === "live" ? "block" : "none";
   applyState("stopped", "Stopped", "", false);
   refreshPending();

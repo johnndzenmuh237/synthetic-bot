@@ -154,7 +154,7 @@ LOT_TO_USD = 1.0
 
 # ── Strategies (the user picks one on the dashboard) ─────────
 STRATEGIES = {
-    "EMA_TREND":        "EMA 10/20 Trend (follows the trend)",
+    "EMA_TREND":        "EMA 21/50 Trend + Pullback Entry",
     "REVERSAL_SCALPER": "Reversal Scalper (EMA5/13 + RSI7)",
     "EMA_CROSS":        "EMA Cross (EMA10/20)",
 }
@@ -162,10 +162,10 @@ DEFAULT_STRATEGY = "EMA_TREND"
 # "Candle Follow" was removed from the dashboard. Anything still saved with it becomes EMA_TREND.
 RETIRED_STRATEGIES = {"CANDLE_FOLLOW": "EMA_TREND"}
 
-# EMA 10/20 Trend — every distance and slope is measured in "average candle ranges", so the same
+# EMA 21/50 Trend (periods ET_FAST/ET_SLOW) — every distance and slope is measured in "average candle ranges", so the same
 # numbers work on any index and on both 1-minute and 5-minute candles. Starting points, not proven values.
-ET_FAST             = int(os.getenv("ET_FAST", 10))
-ET_SLOW             = int(os.getenv("ET_SLOW", 20))
+ET_FAST             = int(os.getenv("ET_FAST", 21))
+ET_SLOW             = int(os.getenv("ET_SLOW", 50))
 ET_RANGE_PERIOD     = int(os.getenv("ET_RANGE_PERIOD", 14))        # candles used for the average candle range
 ET_SLOPE_LOOKBACK   = int(os.getenv("ET_SLOPE_LOOKBACK", 3))       # candles over which a slope is measured
 ET_MIN_SEP          = float(os.getenv("ET_MIN_SEP", 0.35))         # EMA10-EMA20 gap needed to enter (x avg range)
@@ -176,7 +176,15 @@ ET_ENTRY_KEEP       = float(os.getenv("ET_ENTRY_KEEP", 0.80))      # gap must st
 ET_CONVERGE_RATIO   = float(os.getenv("ET_CONVERGE_RATIO", 0.65))  # gap below this share of its peak = converging
 ET_CONVERGE_CONFIRM = int(os.getenv("ET_CONVERGE_CONFIRM", 2))     # closed candles in a row before a convergence exit
 ET_PEAK_LOOKBACK    = int(os.getenv("ET_PEAK_LOOKBACK", 12))      # candles used to find the recent peak gap
+ET_EXIT_PEAK_LOOKBACK = int(os.getenv("ET_EXIT_PEAK_LOOKBACK", 30))  # exits compare the gap with its peak over this many candles (slow EMAs need a long look-back)
 ET_COOLDOWN_CANDLES = int(os.getenv("ET_COOLDOWN_CANDLES", 2))     # pause after an exit before the next entry
+# Pullback entry: the bot buys/sells only when price pulls back to the fast EMA (EMA21) inside the trend and holds it.
+ET_PULLBACK_LOOKBACK = int(os.getenv("ET_PULLBACK_LOOKBACK", 12))  # candles before the retest in which price must have been away from EMA21
+ET_AWAY             = float(os.getenv("ET_AWAY", 1.0))             # ...by at least this many candle ranges
+ET_TOUCH_TOL        = float(os.getenv("ET_TOUCH_TOL", 0.15))       # how close to EMA21 counts as touching it (x avg range)
+ET_RETEST_WINDOW    = int(os.getenv("ET_RETEST_WINDOW", 2))        # a retest this many closed candles ago still counts ("just happened")
+ET_MAX_CHASE        = float(os.getenv("ET_MAX_CHASE", 1.5))        # never enter further than this from EMA21 (x avg range)
+ET_PULLBACK_KEEP    = float(os.getenv("ET_PULLBACK_KEEP", 0.6))    # the EMA gap must still be this share of its recent peak
 
 # Trading session length (dashboard). When it ends: no new trades, open ones are handled, the bot stops.
 SESSION_CHOICES = {"1": "1 hour", "2": "2 hours", "4": "4 hours", "8": "8 hours", "12": "12 hours", "24": "24 hours"}

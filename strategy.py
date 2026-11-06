@@ -58,11 +58,12 @@ def strategy_info(name):
         return {"name": name, "title": STRATEGIES.get(name, name),
                 "fast": ET_FAST, "slow": ET_SLOW, "rsi": None,
                 "labels": {"a": "EMA{}".format(ET_FAST), "b": "EMA{}".format(ET_SLOW), "c": "Close"},
-                "rules": ["Trades the trend on closed 1-minute candles - a trend already running is traded too",
-                          "Enter only when EMA{} and EMA{} are apart and both point the same way".format(ET_FAST, ET_SLOW),
+                "rules": ["Reads closed 1-minute candles",
+                          "Trend: EMA{} and EMA{} apart and both pointing the same way".format(ET_FAST, ET_SLOW),
+                          "Enter only on a pullback that retests EMA{} and holds it".format(ET_FAST),
+                          "A trend already far advanced is not chased - wait for the next retest",
                           "No trades while the averages are flat, tangled or crossing back and forth",
-                          "Exit when the averages cross back or keep coming together for {} candles".format(ET_CONVERGE_CONFIRM),
-                          "Opposite trade only after the new direction is confirmed"]}
+                          "Profit is protected when the averages keep coming together"]}
     if name == "EMA_CROSS":
         return {"name": name, "title": STRATEGIES.get(name, name),
                 "fast": EMA_TREND_FAST, "slow": EMA_TREND_SLOW, "rsi": None,
@@ -187,11 +188,11 @@ def _evaluate_cross(m5_df, m1_df, symbol, tf="M1"):
 def _evaluate_trend(m5_df, m1_df, symbol, tf="M1"):
     """A signal whenever a clear, healthy trend exists on the closed candles of the selected
     timeframe — whether the crossover just happened or happened long before the bot started."""
-    from ema_trend import prepare_trend, trend_state, MIN_ROWS
+    from ema_trend import prepare_trend, pullback_entry, MIN_ROWS
     if m1_df is None or len(m1_df) < MIN_ROWS:
         return None
     d = prepare_trend(m1_df)
-    state, why = trend_state(d)
+    state, why = pullback_entry(d)
     if state == "NONE":
         return None
     last = d.iloc[-1]

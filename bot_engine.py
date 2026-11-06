@@ -712,7 +712,7 @@ class BotSession:
 
     # ── Reversal exits ───────────────────────────────────────
     async def _trend_exits(self, df):
-        """EMA 10/20 Trend exits, checked on every closed candle.
+        """EMA 21/50 Trend exits, checked on every closed candle.
         * averages coming together  -> PROFIT PROTECTION only: a trade that is in profit is closed to bank it.
           A trade that is not in profit is never closed just because the averages converged.
         * averages crossed against the trade -> a profitable trade is closed; a losing trade follows the

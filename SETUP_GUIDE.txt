@@ -505,3 +505,5 @@ Every time you want to run the bot:
   → open http://localhost:5000 in browser
 
 =======================================================
+
+pip install MetaTrader5
